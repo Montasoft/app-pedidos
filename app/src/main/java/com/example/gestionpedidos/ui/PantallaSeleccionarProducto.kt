@@ -3,31 +3,37 @@ package com.example.gestionpedidos.ui
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.example.gestionpedidos.*
-import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.launch
+import com.example.gestionpedidos.utils.aPesos
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.ripple.rememberRipple
+
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,42 +42,48 @@ fun PantallaSeleccionarProducto(
     navController: NavController,
     onBack: () -> Unit
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // ✅ CORRECCIÓN 1: Observar StateFlows
     val productos by viewModel.productos.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
 
-    // Extraer las categorías de la lista de productos actual
+    // Estados locales
+    var busqueda by remember { mutableStateOf("") }
+    var categoriaSeleccionada by remember { mutableStateOf<String?>(null) }
+
+    // Extraer categorías
     val categorias = remember(productos) {
         productos.map { it.categoriaNombre }.distinct().sorted()
     }
 
-    var busqueda by remember { mutableStateOf("") }
-    var categoriaSeleccionada by remember { mutableStateOf<String?>(null) }
-
-    // Cargar productos al iniciar (desde local si existe, sino desde servidor)
+    // ✅ CORRECCIÓN 2: Cargar productos sin context
     LaunchedEffect(Unit) {
         if (productos.isEmpty()) {
-            viewModel.cargarProductos(context, forzarActualizacion = false)
+            viewModel.iniciarCargaDeDatos(forzarActualizacion = false)
+        }
+    }
 
-            // Mostrar feedback al usuario
-            if (viewModel.errorMessage != null) {
-                snackbarHostState.showSnackbar("❌ ${viewModel.errorMessage}")
-            } else if (productos.isEmpty()) {
-                snackbarHostState.showSnackbar("⚠️ No hay productos cargados")
-            }
+    // ✅ CORRECCIÓN 3: Observar canal de snackbar
+    LaunchedEffect(Unit) {
+        viewModel.snackbarFlow.collect { mensaje ->
+            snackbarHostState.showSnackbar(mensaje)
         }
     }
 
     // 🧩 Escuchar el resultado del escáner
     LaunchedEffect(Unit) {
-        navController.currentBackStackEntryFlow.collect { entry ->
-            entry.savedStateHandle.get<String>("codigoEscaneado")?.let { codigo ->
-                busqueda = codigo
-                entry.savedStateHandle.remove<String>("codigoEscaneado")
+        navController.currentBackStackEntry?.savedStateHandle
+            ?.getStateFlow<String?>("codigoEscaneado", null)
+            ?.collect { codigo ->
+                codigo?.let {
+                    busqueda = it
+                    navController.currentBackStackEntry?.savedStateHandle
+                        ?.remove<String>("codigoEscaneado")
+                }
             }
-        }
     }
 
     Scaffold(
@@ -84,19 +96,14 @@ fun PantallaSeleccionarProducto(
                     }
                 },
                 actions = {
-                    // Botón para actualizar catálogo desde servidor
+                    // Botón para actualizar catálogo
                     IconButton(
                         onClick = {
                             scope.launch {
-                                snackbarHostState.showSnackbar("🔄 Actualizando catálogo...")
-                                viewModel.cargarProductos(context, forzarActualizacion = true)
-                                if (viewModel.errorMessage == null) {
-                                    snackbarHostState.showSnackbar("✅ Catálogo actualizado")
-                                } else {
-                                    snackbarHostState.showSnackbar("❌ ${viewModel.errorMessage}")
-                                }
+                                viewModel.iniciarCargaDeDatos(forzarActualizacion = true)
                             }
-                        }
+                        },
+                        enabled = !isLoading
                     ) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Actualizar catálogo")
                     }
@@ -106,157 +113,208 @@ fun PantallaSeleccionarProducto(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
 
-        if (viewModel.isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.height(12.dp))
-                    Text("Cargando productos...", color = MaterialTheme.colorScheme.primary)
-                }
-            }
-            return@Scaffold
-        }
-
-        Column(
+        Box(
             modifier = Modifier
-                .padding(padding)
-                .padding(16.dp)
                 .fillMaxSize()
+                .padding(padding)
         ) {
-
-            // 🔍 Campo de búsqueda + botón escáner
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                OutlinedTextField(
-                    value = busqueda,
-                    onValueChange = { busqueda = it },
-                    label = { Text("Buscar producto") },
-                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Buscar") },
-                    modifier = Modifier.weight(1f)
-                )
-
-                Button(onClick = { navController.navigate("escanearCodigo") }) {
-                    Text("📷")
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            // 🔽 Filtro por categoría
-            var expanded by remember { mutableStateOf(false) }
-
-            Box {
-                OutlinedTextField(
-                    value = categoriaSeleccionada ?: "Todas",
-                    onValueChange = {},
-                    label = { Text("Filtrar por categoría") },
-                    readOnly = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    trailingIcon = {
-                        IconButton(onClick = { expanded = !expanded }) {
-                            Text(if (expanded) "▲" else "▼")
-                        }
-                    }
-                )
-
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Todas las categorías") },
-                        onClick = {
-                            categoriaSeleccionada = null
-                            expanded = false
-                        }
-                    )
-                    categorias.forEach { cat ->
-                        DropdownMenuItem(
-                            text = { Text(cat) },
-                            onClick = {
-                                categoriaSeleccionada = cat
-                                expanded = false
-                            }
+            // ✅ Manejo de estados con when
+            when {
+                isLoading -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Cargando productos...",
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
+
+                errorMessage != null && productos.isEmpty() -> {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.Error,
+                            contentDescription = "Error",
+                            modifier = Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "⚠️ $errorMessage",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    viewModel.iniciarCargaDeDatos(forzarActualizacion = true)
+                                }
+                            }
+                        ) {
+                            Text("Reintentar")
+                        }
+                    }
+                }
+
+                else -> {
+                    ContenidoSeleccionProducto(
+                        productos = productos,
+                        busqueda = busqueda,
+                        categoriaSeleccionada = categoriaSeleccionada,
+                        categorias = categorias,
+                        onBusquedaChange = { busqueda = it },
+                        onCategoriaChange = { categoriaSeleccionada = it },
+                        onEscanear = { navController.navigate("escanearCodigo") },
+                        onAgregarProducto = { producto, cantidad, costo ->
+                            val detalle = DetallePedido(
+                                productoId = producto.id,
+                                productoNombre = producto.nombre,
+                                cantidadPedida = cantidad,
+                                precioEsperado = costo,
+                                presentacionId = producto.presentacionId,
+                                codigoDeBarras = producto.codigoBarras ?: ""
+                            )
+                            viewModel.agregarProductoAlPedido(detalle)
+                            navController.popBackStack()
+                            scope.launch {
+                                snackbarHostState.showSnackbar("✅ ${producto.nombre} agregado")
+                            }
+                        }
+                    )
+                }
             }
+        }
+    }
+}
 
-            Spacer(Modifier.height(12.dp))
-
-            // Mostrar contador de productos
-            Text(
-                text = "Total productos: ${productos.size}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+// ✅ Componente de contenido principal
+@Composable
+private fun ContenidoSeleccionProducto(
+    productos: List<Producto>,
+    busqueda: String,
+    categoriaSeleccionada: String?,
+    categorias: List<String>,
+    onBusquedaChange: (String) -> Unit,
+    onCategoriaChange: (String?) -> Unit,
+    onEscanear: () -> Unit,
+    onAgregarProducto: (Producto, Double, Double) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // 🔍 Campo de búsqueda + botón escáner
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedTextField(
+                value = busqueda,
+                onValueChange = onBusquedaChange,
+                label = { Text("Buscar producto") },
+                placeholder = { Text("Nombre o código de barras") },
+                leadingIcon = {
+                    Icon(Icons.Filled.Search, contentDescription = "Buscar")
+                },
+                trailingIcon = {
+                    if (busqueda.isNotEmpty()) {
+                        IconButton(onClick = { onBusquedaChange("") }) {
+                            Icon(Icons.Default.Clear, "Limpiar")
+                        }
+                    }
+                },
+                modifier = Modifier.weight(1f),
+                singleLine = true
             )
 
-            Spacer(Modifier.height(8.dp))
+            IconButton(
+                onClick = onEscanear,
+                modifier = Modifier.size(56.dp)
+            ) {
+                Icon(
+                    Icons.Default.QrCodeScanner,
+                    contentDescription = "Escanear código",
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
 
-            // 📦 Filtrar productos por texto / categoría
-            val productosFiltrados = productos.filter {
+        Spacer(Modifier.height(12.dp))
+
+        // 🔽 Filtro por categoría
+        FiltroCategoria(
+            categoriaSeleccionada = categoriaSeleccionada,
+            categorias = categorias,
+            onCategoriaChange = onCategoriaChange
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        // 📦 Filtrar productos
+        val productosFiltrados = remember(productos, busqueda, categoriaSeleccionada) {
+            productos.filter {
                 (categoriaSeleccionada == null || it.categoriaNombre == categoriaSeleccionada) &&
                         (busqueda.isBlank() ||
                                 it.nombre.contains(busqueda, ignoreCase = true) ||
                                 it.codigoBarras?.contains(busqueda, ignoreCase = true) == true)
             }
+        }
 
-            if (productos.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Text(
-                            "No hay productos disponibles",
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("🔄 Descargando catálogo...")
-                                    viewModel.cargarProductos(context, forzarActualizacion = true)
-                                }
-                            }
-                        ) {
-                            Text("Cargar catálogo")
-                        }
+        // Contador
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Mostrando ${productosFiltrados.size} de ${productos.size}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            if (busqueda.isNotEmpty() || categoriaSeleccionada != null) {
+                TextButton(
+                    onClick = {
+                        onBusquedaChange("")
+                        onCategoriaChange(null)
                     }
-                }
-            } else if (productosFiltrados.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        "No se encontraron productos con esos filtros",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Limpiar filtros")
                 }
-            } else {
-                Text(
-                    text = "Mostrando ${productosFiltrados.size} productos",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // Lista de productos
+        when {
+            productos.isEmpty() -> {
+                EstadoVacioProductos()
+            }
+            productosFiltrados.isEmpty() -> {
+                EstadoSinResultados(
+                    onLimpiarFiltros = {
+                        onBusquedaChange("")
+                        onCategoriaChange(null)
+                    }
                 )
-
-                Spacer(Modifier.height(8.dp))
-
+            }
+            else -> {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(
                         items = productosFiltrados,
@@ -265,23 +323,14 @@ fun PantallaSeleccionarProducto(
                         ProductoItem(
                             producto = producto,
                             onAgregar = { cantidad, costo ->
-                                val detalle = DetallePedido(
-                                    productoId = producto.id,
-                                    productoNombre = producto.nombre,
-                                    cantidadPedida = cantidad,
-                                    precioEsperado = costo,
-                                    presentacionId = producto.presentacionId ,
-                                    codigoDeBarras = producto.codigoBarras ?: ""
-                                )
-                                // notificamos al ViewModel que agreague el producto a la lista
-                                viewModel.agregarProductoAlPedido(detalle)
-                                // navegamos hacia atras
-                                navController.popBackStack()
-                                scope.launch {
-                                    snackbarHostState.showSnackbar("✅ ${producto.nombre} agregado")
-                                }
+                                onAgregarProducto(producto, cantidad, costo)
                             }
                         )
+                    }
+
+                    // Espacio final
+                    item {
+                        Spacer(Modifier.height(16.dp))
                     }
                 }
             }
@@ -289,16 +338,137 @@ fun PantallaSeleccionarProducto(
     }
 }
 
+// ✅  Componente de filtro de categoría
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProductoItem(
+private fun FiltroCategoria(
+    categoriaSeleccionada: String?,
+    categorias: List<String>,
+    onCategoriaChange: (String?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it }
+    ) {
+        OutlinedTextField(
+            value = categoriaSeleccionada ?: "Todas las categorías",
+            onValueChange = {},
+            label = { Text("Categoría") },
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(),
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+            }
+        )
+
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Todas las categorías") },
+                onClick = {
+                    onCategoriaChange(null)
+                    expanded = false
+                },
+                leadingIcon = {
+                    if (categoriaSeleccionada == null) {
+                        Icon(Icons.Default.Check, "Seleccionado")
+                    }
+                }
+            )
+            categorias.forEach { cat ->
+                DropdownMenuItem(
+                    text = { Text(cat) },
+                    onClick = {
+                        onCategoriaChange(cat)
+                        expanded = false
+                    },
+                    leadingIcon = {
+                        if (categoriaSeleccionada == cat) {
+                            Icon(Icons.Default.Check, "Seleccionado")
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ✅ Estados vacíos
+@Composable
+private fun EstadoVacioProductos() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Icon(
+                Icons.Default.Inventory,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "No hay productos disponibles",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "Sincroniza con el servidor para cargar el catálogo",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun EstadoSinResultados(onLimpiarFiltros: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Icon(
+                Icons.Default.SearchOff,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "No se encontraron productos",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Button(onClick = onLimpiarFiltros) {
+                Text("Limpiar filtros")
+            }
+        }
+    }
+}
+
+
+// ✅ Card de producto
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProductoItem(
     producto: Producto,
     onAgregar: (Double, Double) -> Unit
 ) {
-    var cantidad by remember { mutableStateOf(1.0) }
     var cantidadText by remember { mutableStateOf(TextFieldValue("1")) }
     var costoText by remember { mutableStateOf(TextFieldValue(producto.costo.toString())) }
 
-    // Interacción para seleccionar todo el texto al hacer clic
     val cantidadInteraction = remember { MutableInteractionSource() }
     val costoInteraction = remember { MutableInteractionSource() }
 
@@ -323,140 +493,228 @@ fun ProductoItem(
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(3.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
-        Column(Modifier.padding(12.dp)) {
+        Column(Modifier.padding(8.dp)) {
             // Información del producto
             Text(
                 producto.nombre,
                 fontSize = 16.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(4.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                Column {
+                    Text(
+                        "Código: ${producto.codigoBarras ?: "N/A"}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        producto.categoriaNombre,
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Text(
-                    "Código: ${producto.codigoBarras ?: "N/A"}",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    "Costo: $${producto.costo}",
-                    fontSize = 12.sp,
+                    producto.costo.aPesos(),
+                    fontSize = 16.sp,
                     color = MaterialTheme.colorScheme.primary,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                    fontWeight = FontWeight.Bold
                 )
             }
+            Spacer(Modifier.height(8.dp))
 
-            Spacer(Modifier.height(12.dp))
-
-            // Controles de cantidad y costo
+            // Controles
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                // Control de cantidad con botones +/-
+                // Cantidad
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         "Cantidad",
                         fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        //modifier = Modifier.width(70.dp)
                     )
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        IconButton(
-                            onClick = {
-                                if (cantidad > 1) {
-                                    cantidad--
-                                    cantidadText = TextFieldValue(cantidad.toInt().toString())
-                                }
-                            },
-                            modifier = Modifier.size(36.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .clickable {
+                                    val current = cantidadText.text.toDoubleOrNull() ?: 1.0
+                                    if (current > 1) {
+                                        cantidadText =
+                                            TextFieldValue((current - 1).toInt().toString())
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 Icons.Filled.Remove,
-                                contentDescription = "Disminuir",
-                                tint = MaterialTheme.colorScheme.primary
+                                "Disminuir",
+                                modifier = Modifier.size(24.dp)
                             )
                         }
-
-                        OutlinedTextField(
+                    }
+                }
+                        BasicTextField(
                             value = cantidadText,
-                            onValueChange = { newValue ->
-                                cantidadText = newValue
-                                cantidad = newValue.text.toDoubleOrNull() ?: 1.0
-                            },
+                            onValueChange = { cantidadText = it },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.weight(1.4f),
                             singleLine = true,
-                            interactionSource = cantidadInteraction
-                        )
+                            interactionSource = cantidadInteraction,
+                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        ) { innerTextField ->
+                            OutlinedTextFieldDefaults.DecorationBox(
+                                value = cantidadText.text,
+                                innerTextField = innerTextField,
+                                enabled = true,
+                                singleLine = true,
+                                visualTransformation = VisualTransformation.None,
+                                interactionSource = cantidadInteraction,
+                                contentPadding = PaddingValues(
+                                    start = 3.dp,
+                                    end = 3.dp,
+                                    top = 1.dp,
+                                    bottom = 1.dp
+                                ),
 
+                                container = {
+                                    OutlinedTextFieldDefaults.ContainerBox(
+                                        enabled = true,
+                                        isError = false,
+                                        interactionSource = cantidadInteraction,
+                                        colors = OutlinedTextFieldDefaults.colors()
+                                    )
+                                }
+                            )
+                        }
                         IconButton(
                             onClick = {
-                                cantidad++
-                                cantidadText = TextFieldValue(cantidad.toInt().toString())
+                                val current = cantidadText.text.toDoubleOrNull() ?: 1.0
+                                cantidadText = TextFieldValue((current + 1).toInt().toString())
                             },
-                            modifier = Modifier.size(36.dp)
+                            modifier = Modifier.size(40.dp)
                         ) {
-                            Icon(
-                                Icons.Filled.Add,
-                                contentDescription = "Aumentar",
-                                tint = MaterialTheme.colorScheme.primary
+                            Icon(Icons.Filled.Add, "Aumentar")
+                        }
+
+                // Costo
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Costo unitario",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                       // modifier = Modifier.padding(bottom = 4.dp)
+
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(40.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BasicTextField(
+                            value = costoText,
+                            onValueChange = { costoText = it },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier
+                                .fillMaxWidth(),
+
+                            singleLine = true,
+                            interactionSource = costoInteraction,
+                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                        ) { innerTextField ->
+                            OutlinedTextFieldDefaults.DecorationBox(
+                                value = costoText.text,
+                                innerTextField = innerTextField,
+                                enabled = true,
+                                singleLine = true,
+                                visualTransformation = VisualTransformation.None,
+                                interactionSource = costoInteraction,
+                                prefix = { Text("$") },
+                                contentPadding = PaddingValues(
+                                    start = 12.dp,
+                                    end = 12.dp,
+                                    top = 1.dp,
+                                    bottom = 1.dp
+                                ),
+                                container = {
+                                    OutlinedTextFieldDefaults.ContainerBox(
+                                        enabled = true,
+                                        isError = false,
+                                        interactionSource = costoInteraction,
+                                        colors = OutlinedTextFieldDefaults.colors()
+                                    )
+                                }
                             )
                         }
                     }
                 }
 
-                // Campo de costo
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Costo",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = costoText,
-                        onValueChange = { newValue ->
-                            costoText = newValue
-                        },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        interactionSource = costoInteraction,
-                        prefix = { Text("$") }
-                    )
-                }
-
-                // Botón flotante de agregar
-                FloatingActionButton(
+                // Botón agregar
+                FilledTonalButton(
                     onClick = {
                         val cantidadFinal = cantidadText.text.toDoubleOrNull() ?: 1.0
                         val costoFinal = costoText.text.toDoubleOrNull() ?: producto.costo
                         onAgregar(cantidadFinal, costoFinal)
-
-                        // Resetear valores
-                        cantidad = 1.0
-                        cantidadText = TextFieldValue("1")
-                        costoText = TextFieldValue(producto.costo.toString())
                     },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .offset(y = 8.dp),
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                ) {
-                    Icon(
-                        Icons.Filled.Check,
-                        contentDescription = "Agregar producto",
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    modifier = Modifier.height(56.dp),
+                    contentPadding = PaddingValues(
+                        start = 1.dp,
+                        end = 1.dp,
+                        top = 13.dp,
+                        bottom = 1.dp
                     )
+                ) {
+                    Icon(Icons.Filled.Check, "Agregar")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Add")
                 }
             }
         }
     }
+}
+
+
+@Preview(showBackground = true) // <-- ¡La anotación mágica!
+@Composable
+private fun PreviewProductoItem() {
+    // 1. Creamos un producto de ejemplo (dummy data)
+    val productoDeEjemplo = Producto(
+        id = 1,
+        nombre = "Producto de Ejemplo Muy Largo para Probar Espacios",
+        costo = 12500.50,
+        codigoBarras = "7701234567890",
+        presentacionId = 101,
+        categoriaNombre = "Categoría de Prueba",
+        precioVenta = 500.0,
+        existencias = 14.0,
+        categoriaId = 1,
+        subcategoriaId = 1,
+        estadoId = 1,
+        subcategoriaNombre = "subcategoria",
+        estadoNombre = "estado"
+    )
+
+    // 2. Llamamos al Composable que queremos previsualizar
+    ProductoItem(
+        producto = productoDeEjemplo,
+        onAgregar = { cantidad, costo ->
+            // En la previsualización, las acciones no hacen nada.
+            // Simplemente puedes imprimir en consola si quieres.
+            println("Preview: Agregar $cantidad a un costo de $costo")
+        }
+    )
 }

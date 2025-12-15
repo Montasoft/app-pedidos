@@ -17,6 +17,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.gestionpedidos.PedidosViewModel
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.items
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,11 +30,18 @@ fun PantallaCompras(
     onConfiguracion: () -> Unit,
     onCrearPedido: () -> Unit
 ) {
-    val context = LocalContext.current
+    val isLoading by viewModel.isLoading.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val isLoading by remember { derivedStateOf { viewModel.isLoading } }
+    //Observar el canal de snackbar del viewModel
+    LaunchedEffect(Unit) {
+        viewModel.snackbarFlow.collect { mensaje ->
+            snackbarHostState.showSnackbar(mensaje)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -77,28 +86,41 @@ fun PantallaCompras(
                 // 🔹 Descargar pedidos con indicador de carga
                 item {
                     OpcionMenu(
-                        titulo = "🔄 Descargar Pedidos",
-                        descripcion = "Cargar la lista de pedidos desde el servidor",
+                        titulo = "🔄 Sincronizar Datos",
+                        descripcion = "Actualizar pedidos, productos y proveedores desde el servidor",
                         icono = Icons.Default.CloudDownload,
                         onClick = {
                             scope.launch {
-                                snackbarHostState.showSnackbar("Descargando pedidos...")
-                                viewModel.cargarPedidos(context)
-
-                                // Espera a que termine el proceso
-                                if (viewModel.errorMessage != null) {
-                                    snackbarHostState.showSnackbar("❌ ${viewModel.errorMessage}")
-                                } else {
-                                    snackbarHostState.showSnackbar("✅ Pedidos actualizados correctamente")
-                                }
+                                viewModel.iniciarCargaDeDatos(forzarActualizacion = true)
                             }
                         }
                     )
                 }
 
-                item { OpcionMenu("📦 Lista de Pedidos", "Ver pedidos abiertos o cerrados", Icons.AutoMirrored.Filled.List, onVerLista) }
-                item { OpcionMenu("🕒 Pendientes", "Compras en curso por enviar", Icons.Default.Schedule, onVerComprasPendientes) }
-                item { OpcionMenu("📜 Historial", "Pedidos y compras enviados", Icons.Default.History, onVerHistorial) }
+                item {
+                    OpcionMenu(
+                        "📦 Lista de Pedidos",
+                        "Ver pedidos abiertos o cerrados",
+                        Icons.AutoMirrored.Filled.List,
+                        onVerLista
+                    )
+                }
+                item {
+                    OpcionMenu(
+                        "🕒 Pendientes",
+                        "Compras en curso por enviar",
+                        Icons.Default.Schedule,
+                        onVerComprasPendientes
+                    )
+                }
+                item {
+                    OpcionMenu(
+                        "📜 Historial",
+                        "Pedidos y compras enviados",
+                        Icons.Default.History,
+                        onVerHistorial
+                    )
+                }
 
                 item {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -126,7 +148,40 @@ fun PantallaCompras(
                         )
                     }
                 }
+
+
+                //Mostrar Mensaje de error si existe
+                errorMessage?.let { mensaje ->
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(0.9f),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Error,
+                                    contentDescription = "Error",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = mensaje,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                    }
+                }
             }
+
+
+            //***************
 
             // 🔸 Indicador de carga centrado
             if (isLoading) {
@@ -140,7 +195,7 @@ fun PantallaCompras(
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Descargando pedidos...",
+                            text = "Sincronizando datos ...",
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary
                         )

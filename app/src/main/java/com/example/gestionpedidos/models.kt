@@ -9,9 +9,19 @@ package com.example.gestionpedidos
 import java.util.*
 import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
+import androidx.room.Entity
+import androidx.room.PrimaryKey
 
 import com.google.gson.annotations.SerializedName
 
+
+data class Pedido(
+    val idPedido: Int,
+    val fechaPedido: String,
+    val proveedor: String,
+    var estadoNombre: String,
+    val detallesPedido: List<DetallePedido>
+)
 
 @Parcelize
 data class DetallePedido(
@@ -24,12 +34,12 @@ data class DetallePedido(
     var confirmado: Boolean = false
 ) : Parcelable
 
-data class Pedido(
-    val idPedido: Int,
-    val fechaPedido: String,
+data class Compra(
+    var idCompra: Int = 0,
+    val fechaCompra: String,
     val proveedor: String,
-    var estadoNombre: String,
-    val detallesPedido: List<DetallePedido>
+    val estado: String = "abierto",
+    val detallesCompra: MutableList<DetalleCompra> = mutableListOf()
 )
 
 data class DetalleCompra(
@@ -40,12 +50,21 @@ data class DetalleCompra(
     var precioUnitario: Double
 )
 
-data class Compra(
-    var idCompra: Int = 0,
-    val fechaCompra: String,
-    val proveedor: String,
-    val estado: String = "abierto",
-    val detallesCompra: MutableList<DetalleCompra> = mutableListOf()
+
+data class Producto(
+    val id: Int,
+    val nombre: String,
+    val codigoBarras: String?,
+    val costo: Double,
+    val precioVenta: Double,
+    val existencias: Double,
+    val categoriaId: Int,
+    val subcategoriaId: Int,
+    val estadoId: Int,
+    val categoriaNombre: String,
+    val presentacionId: Int?,
+    val subcategoriaNombre: String,
+    val estadoNombre: String
 )
 
 data class Presentacion(
@@ -60,6 +79,18 @@ data class Presentacion(
     @SerializedName("existenciasEnPresentacion") val existenciasEnPresentacion: Double,
     @SerializedName("existenciasDisponiblesEnPresentacion") val existenciasDisponiblesEnPresentacion: Double
 )
+
+data class Proveedor(
+    val id: Int,
+    val nombre: String
+)
+
+
+// modelos tal como se recibel del backend
+/**
+ * Modelo para un Pedido tal como viene del endpoint de la lista de pedidos.
+ * Usa @SerializedName para mapear los nombres del JSON a nombres de propiedad más claros.
+ */
 
 data class ProductoResponse(
     @SerializedName("id") val id: Int,
@@ -86,32 +117,6 @@ data class ProductoResponse(
     @SerializedName("permiteVentaNegativa") val permiteVentaNegativa: Boolean
 )
 
-data class Producto(
-    val id: Int,
-    val nombre: String,
-    val codigoBarras: String?,
-    val costo: Double,
-    val precioVenta: Double,
-    val existencias: Double,
-    val categoriaId: Int,
-    val subcategoriaId: Int,
-    val estadoId: Int,
-    val categoriaNombre: String,
-    val presentacionId: Int?,
-    val subcategoriaNombre: String,
-    val estadoNombre: String
-)
-
-data class Proveedor(
-    val id: Int,
-    val nombre: String
-)
-
-// modelos tal como se recibel del backend
-/**
- * Modelo para un Pedido tal como viene del endpoint de la lista de pedidos.
- * Usa @SerializedName para mapear los nombres del JSON a nombres de propiedad más claros.
- */
 data class PedidoResponse(
     @SerializedName("id") val id: Int,
     @SerializedName("fechaPedido") val fechaPedido: String,
@@ -201,7 +206,6 @@ fun PedidoResponse.aPedidoDeUI(): Pedido {
         } ?: emptyList() // Si no hay detalles, devuelve una lista vacía
     )
 }
-
 
 // --- MODELOS PARA LA PETICIÓN (REQUEST) DE GUARDAR PEDIDO ---
 

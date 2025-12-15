@@ -1,325 +1,414 @@
-package com.example.gestionpedidos
-
 // ==========================
 // File: PedidosViewModel.kt
+// Package: com.example.gestionpedidos
 // ==========================
 
+package com.example.gestionpedidos
+
 import android.content.Context
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.input.key.type
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.gestionpedidos.data.local.AppDatabase
+import com.example.gestionpedidos.data.local.dao.*
+import com.example.gestionpedidos.data.local.entities.*
+import com.example.gestionpedidos.data.mappers.* // Importa los mappers de API
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
-import androidx.core.content.edit
-//import androidx.datastore.core.use
-//import androidx.paging.map
-import com.google.gson.reflect.TypeToken
-import kotlinx.coroutines.async
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlin.io.path.outputStream
 
-class PedidosViewModel : ViewModel() {
-    // API + estados visibles por Compose
-    var apiUrl by mutableStateOf("")
-    var pedidos by mutableStateOf<List<Pedido>>(emptyList())
-    var compras by mutableStateOf<List<Compra>>(emptyList())
+class PedidosViewModel(private val context: Context) : ViewModel() {
 
-    // Declara un StateFlow PRIVADO y mutable para uso interno
-    private val _productos = MutableStateFlow<List<Producto>>(emptyList())
-    private val _proveedores = MutableStateFlow<List<Proveedor>>(emptyList())
+    // ============================================
+    // DATABASE & DAOs
+    // ============================================
+    private val database = AppDatabase.getDatabase(context)
+    private val pedidoDao = database.pedidoDao()
+    private val detallePedidoDao = database.detallePedidoDao()
+    private val productoDao = database.productoDao()
+    private val presentacionDao = database.presentacionDao()
+    private val proveedorDao = database.proveedorDao()
+    private val compraDao = database.compraDao()
+    private val detalleCompraDao = database.detalleCompraDao()
 
-    // Expón un StateFlow PÚBLICO e inmutable para que la UI lo observe
-    val productos: StateFlow<List<Producto>> = _productos.asStateFlow()
-    val proveedores: StateFlow<List<Proveedor>> = _proveedores.asStateFlow()
+    private val gson = Gson()
+    private val prefs = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
 
-    // --- ESTADOS DEL PEDIDO EN CURSO (¡NUEVO!) ---
+    // ============================================
+    // FLOWS DESDE LA BASE DE DATOS
+    // ============================================
+
+    // Productos desde Room (reactivo)
+    val productos: StateFlow<List<Producto>> = productoDao.getAllProductosConPresentaciones()
+        .map { lista -> lista.map { it.aProductoDeUI() } }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // Proveedores desde Room (reactivo)
+    val proveedores: StateFlow<List<Proveedor>> = proveedorDao.getAllProveedores()
+        .map { lista -> lista.map { it.aProveedorDeUI() } }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // Pedidos desde Room (reactivo)
+    val pedidosFlow: StateFlow<List<Pedido>> = pedidoDao.getAllPedidosConDetalles()
+        .map { lista -> lista.map { it.aPedidoDeUI() } }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // Compras pendientes desde Room (reactivo)
+    val comprasFlow: StateFlow<List<Compra>> = compraDao.getAllComprasConDetalles()
+        .map { lista -> lista.map { it.aCompraDeUI() } }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // ============================================
+    // ESTADO DE LA UI
+    // ============================================
+
+    private val _apiUrl = MutableStateFlow("")
+    val apiUrl: StateFlow<String> = _apiUrl.asStateFlow()
+
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
     private val _proveedorSeleccionado = MutableStateFlow<Proveedor?>(null)
     val proveedorSeleccionado: StateFlow<Proveedor?> = _proveedorSeleccionado.asStateFlow()
 
     private val _detallesPedido = MutableStateFlow<List<DetallePedido>>(emptyList())
     val detallesPedido: StateFlow<List<DetallePedido>> = _detallesPedido.asStateFlow()
 
-    var comprasEnviadas by mutableStateOf<List<Compra>>(emptyList())
-    var isLoading by mutableStateOf(false)
-    var errorMessage by mutableStateOf<String?>(null)
-    var filtroProveedor by mutableStateOf<String?>(null)
-    var filtroEstado by mutableStateOf<String?>(null)
-    var busqueda by mutableStateOf("")
-
-    // Estados de selección / navegación (fuente única de verdad)
-    var selectedPedidoId by mutableStateOf<Int?>(null)
-    var selectedDetalleId by mutableStateOf<Int?>(null)
-    var currentCompra by mutableStateOf<Compra?>(null)
-
-    private val gson = Gson()
-
-    // canal para enviar eventos de Snackbar a la UI
     private val _snackbarChannel = Channel<String>()
     val snackbarFlow = _snackbarChannel.receiveAsFlow()
 
+    // Estados de selección
+    private val _selectedPedidoId = MutableStateFlow<Int?>(null)
+    val selectedPedidoId: StateFlow<Int?> = _selectedPedidoId.asStateFlow()
 
-    // ---------------------------------------------------------------------
-    // Carga / guardado pedidos (remoto + local)
-    // ---------------------------------------------------------------------
-    fun cargarPedidos(context: Context) {
-        viewModelScope.launch {
-            isLoading = true
-            errorMessage = null
-            try {
-                val resultado = withContext(Dispatchers.IO) {
-                    val url = URL("${apiUrl.trimEnd('/')}/pedidos")
-                    val connection = url.openConnection() as HttpURLConnection
-                    connection.requestMethod = "GET"
-                    connection.setRequestProperty("Accept", "application/json")
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 15000
+    private val _selectedDetalleId = MutableStateFlow<Int?>(null)
+    val selectedDetalleId: StateFlow<Int?> = _selectedDetalleId.asStateFlow()
 
-                    val responseCode = connection.responseCode
+    private val _currentCompra = MutableStateFlow<Compra?>(null)
+    val currentCompra: StateFlow<Compra?> = _currentCompra.asStateFlow()
 
-                    if (responseCode in 200..299) {
-                        val response = connection.inputStream.bufferedReader().use { it.readText() }
+    // Filtros
+    private val _filtroProveedor = MutableStateFlow<String?>(null)
+    val filtroProveedor: StateFlow<String?> = _filtroProveedor.asStateFlow()
 
-                        // 1. Gson parsea usando los modelos *Response
-                        val tipoLista = object : TypeToken<List<PedidoResponse>>() {}.type
-                        val pedidosDesdeApi = gson.fromJson<List<PedidoResponse>>(response, tipoLista)
+    private val _filtroEstado = MutableStateFlow<String?>(null)
+    val filtroEstado: StateFlow<String?> = _filtroEstado.asStateFlow()
 
-                        // 2. Mapeas/Conviertes al modelo de UI
-                        val listaPedidosUI = pedidosDesdeApi.map { it.aPedidoDeUI() }
+    private val _busqueda = MutableStateFlow("")
+    val busqueda: StateFlow<String> = _busqueda.asStateFlow()
 
-                        // 3. Devuelves la lista ya convertida
-                        return@withContext listaPedidosUI
-                    } else {
-                        val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "Sin detalles"
-                        throw Exception("Error HTTP $responseCode: $errorBody")
-                    }
-                }
-                // Si la llamada a la API fue exitosa:
-                pedidos = resultado
-                guardarPedidosLocal(context)
-                errorMessage = null // Aseguramos que no haya mensaje de error
+    init {
+        // Cargar configuración guardada
+        _apiUrl.value = prefs.getString("api_url", "") ?: ""
+    }
 
-            } catch (e: Exception) {
-                e.printStackTrace() // Mantenemos el log para depuración
+    // ============================================
+    // CONFIGURACIÓN
+    // ============================================
 
-                // 1. Cargamos la copia local de los pedidos
-                cargarPedidosLocal(context)
+    fun setApiUrl(url: String) {
+        _apiUrl.value = url
+        prefs.edit().putString("api_url", url).apply()
+    }
 
-                // 2. Verificamos si se cargaron datos locales
-                if (pedidos.isNotEmpty()) {
-                    // Si hay datos, limpiamos el error principal y notificamos por Snackbar
-                    errorMessage = null
-                    _snackbarChannel.send("⚠️ No se pudo conectar. Mostrando datos locales.")
+    // ============================================
+    // CARGA INICIAL DE DATOS
+    // ============================================
+
+    fun iniciarCargaDeDatos(forzarActualizacion: Boolean = false) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isLoading.value = true
+            _errorMessage.value = null
+
+            // Los datos YA se están observando desde Room via Flow
+            // Solo necesitamos sincronizar con el servidor
+
+            val proveedoresJob = async { sincronizarProveedores(forzarActualizacion) }
+            val productosJob = async { sincronizarProductos(forzarActualizacion) }
+            val pedidosJob = async { sincronizarPedidos() }
+
+            val proveedoresOK = proveedoresJob.await()
+            val productosOK = productosJob.await()
+            val pedidosOK = pedidosJob.await()
+
+            if (!proveedoresOK && !productosOK && !pedidosOK) {
+                _snackbarChannel.send("⚠️ No se pudo conectar al servidor. Mostrando datos locales.")
+            }
+
+            withContext(Dispatchers.Main) {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    // ============================================
+    // SINCRONIZACIÓN CON SERVIDOR
+    // ============================================
+
+    private suspend fun sincronizarProveedores(forzar: Boolean = false): Boolean {
+        return try {
+            val ultimaSync = prefs.getLong("ultima_sync_proveedores", 0L)
+            val ahora = System.currentTimeMillis()
+            val hanPasado24h = (ahora - ultimaSync) > (24 * 60 * 60 * 1000)
+
+            // Si no es forzado y no han pasado 24h, no sincronizar
+            if (!forzar && !hanPasado24h) {
+                return true
+            }
+
+            if (_apiUrl.value.isBlank()) {
+                return false
+            }
+
+            val proveedoresResponse = withContext(Dispatchers.IO) {
+                val url = URL("${_apiUrl.value.trimEnd('/')}/proveedores")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.setRequestProperty("Accept", "application/json")
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
+
+                val responseCode = connection.responseCode
+                if (responseCode in 200..299) {
+                    val json = connection.inputStream.bufferedReader().use { it.readText() }
+                    // Usar el tipo del paquete raíz
+                    gson.fromJson(json, Array<com.example.gestionpedidos.Proveedor>::class.java).toList()
                 } else {
-                    // Si no hay conexión Y TAMPOCO hay datos locales, entonces sí mostramos el error principal
-                    errorMessage = "Error al cargar pedidos: ${e.message}"
+                    throw Exception("Error HTTP $responseCode")
                 }
-
-            } finally {
-                isLoading = false
             }
-        }
-    }
 
-    private fun guardarPedidosLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "pedidos.json")
-            file.writeText(gson.toJson(pedidos))
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun cargarPedidosLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "pedidos.json")
-            if (file.exists()) {
-                val json = file.readText()
-                pedidos = gson.fromJson(json, Array<Pedido>::class.java).toList()
+            // Guardar en Room
+            withContext(Dispatchers.IO) {
+                val entities = proveedoresResponse.map { it.aProveedorEntity() }
+                proveedorDao.insertProveedores(entities)
             }
+
+            prefs.edit().putLong("ultima_sync_proveedores", ahora).apply()
+            true
+
         } catch (e: Exception) {
             e.printStackTrace()
+            false
         }
     }
 
-    // ---------------------
-    // Compras locales (pendientes) y envío
-    // ---------------------
-    fun agregarCompra(compra: Compra, context: Context) {
-        compra.idCompra = (compras.maxOfOrNull { it.idCompra } ?: 0) + 1
-        compras = compras + compra
-        guardarComprasLocal(context)
-    }
+    private suspend fun sincronizarProductos(forzar: Boolean = false): Boolean {
+        return try {
+            val ultimaSync = prefs.getLong("ultima_sync_productos", 0L)
+            val ahora = System.currentTimeMillis()
+            val hanPasado24h = (ahora - ultimaSync) > (24 * 60 * 60 * 1000)
 
-    fun eliminarCompra(compra: Compra, context: Context) {
-        compras = compras.filter { it.idCompra != compra.idCompra }
-        guardarComprasLocal(context)
-    }
-
-    private fun guardarComprasLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "compras.json")
-            file.writeText(gson.toJson(compras))
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun cargarComprasLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "compras.json")
-            if (file.exists()) {
-                val json = file.readText()
-                compras = gson.fromJson(json, Array<Compra>::class.java).toList()
+            if (!forzar && !hanPasado24h) {
+                return true
             }
+
+            if (_apiUrl.value.isBlank()) {
+                return false
+            }
+
+            val productosResponse = withContext(Dispatchers.IO) {
+                val url = URL("${_apiUrl.value.trimEnd('/')}/productos")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.setRequestProperty("Accept", "application/json")
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
+
+                val responseCode = connection.responseCode
+                if (responseCode in 200..299) {
+                    val json = connection.inputStream.bufferedReader().use { it.readText() }
+                    // Usar el tipo del paquete raíz
+                    val type = object : TypeToken<List<com.example.gestionpedidos.ProductoResponse>>() {}.type
+                    gson.fromJson<List<com.example.gestionpedidos.ProductoResponse>>(json, type)
+                } else {
+                    throw Exception("Error HTTP $responseCode")
+                }
+            }
+
+            // Guardar en Room (productos + presentaciones)
+            withContext(Dispatchers.IO) {
+                productosResponse.forEach { productoResponse ->
+                    productoResponse.saveToDatabase(productoDao, presentacionDao)
+                }
+            }
+
+            prefs.edit().putLong("ultima_sync_productos", ahora).apply()
+            true
+
         } catch (e: Exception) {
             e.printStackTrace()
+            false
         }
     }
 
+    private suspend fun sincronizarPedidos(): Boolean {
+        return try {
+            if (_apiUrl.value.isBlank()) {
+                return false
+            }
 
-    fun enviarCompras(context: Context) {
-        viewModelScope.launch {
-            isLoading = true
-            errorMessage = null
-            try {
-                withContext(Dispatchers.IO) {
-                    val url = URL("${apiUrl.trimEnd('/')}/compras")
-                    val connection = url.openConnection() as HttpURLConnection
-                    connection.requestMethod = "POST"
-                    connection.setRequestProperty("Content-Type", "application/json")
-                    connection.doOutput = true
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 15000
+            val pedidosResponse = withContext(Dispatchers.IO) {
+                val url = URL("${_apiUrl.value.trimEnd('/')}/pedidos")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.setRequestProperty("Accept", "application/json")
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
 
-                    val jsonCompras = gson.toJson(compras)
-                    connection.outputStream.bufferedWriter().use { it.write(jsonCompras) }
+                val responseCode = connection.responseCode
+                if (responseCode in 200..299) {
+                    val json = connection.inputStream.bufferedReader().use { it.readText() }
+                    // Usar el tipo del paquete raíz
+                    val type = object : TypeToken<List<com.example.gestionpedidos.PedidoResponse>>() {}.type
+                    gson.fromJson<List<com.example.gestionpedidos.PedidoResponse>>(json, type)
+                } else {
+                    throw Exception("Error HTTP $responseCode")
+                }
+            }
 
-                    if (connection.responseCode in 200..299) {
-                        comprasEnviadas = comprasEnviadas + compras
-                        compras = emptyList()
-                        guardarComprasLocal(context)
-                        guardarHistorialLocal(context)
-                    } else {
-                        throw Exception("Error: ${connection.responseCode}")
+            // Guardar en Room
+            withContext(Dispatchers.IO) {
+                pedidosResponse.forEach { pedidoResponse ->
+                    pedidoResponse.saveToDatabase(pedidoDao, detallePedidoDao)
+                }
+            }
+
+            true
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    // ============================================
+    // GESTIÓN DE PEDIDOS
+    // ============================================
+
+    fun pedidosFiltrados(): StateFlow<List<Pedido>> {
+        return combine(
+            pedidosFlow,
+            filtroProveedor,
+            filtroEstado,
+            busqueda
+        ) { pedidos, proveedor, estado, busquedaTxt ->
+            var resultado = pedidos
+
+            proveedor?.let { prov ->
+                resultado = resultado.filter { it.proveedor == prov }
+            }
+
+            estado?.let { est ->
+                resultado = resultado.filter { it.estadoNombre == est }
+            }
+
+            if (busquedaTxt.isNotBlank()) {
+                resultado = resultado.filter { pedido ->
+                    val proveedorCoincide = pedido.proveedor.contains(busquedaTxt, ignoreCase = true)
+                    val detalleCoincide = pedido.detallesPedido.any { detalle ->
+                        detalle.productoNombre.contains(busquedaTxt, ignoreCase = true) ||
+                                (detalle.codigoDeBarras?.contains(busquedaTxt, ignoreCase = true) ?: false)
                     }
+                    proveedorCoincide || detalleCoincide
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                errorMessage = "Error al enviar compras: ${e.message}"
-            } finally {
-                isLoading = false
             }
-        }
+
+            resultado
+        }.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
     }
 
-    private fun guardarHistorialLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "historial.json")
-            file.writeText(gson.toJson(comprasEnviadas))
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun cargarHistorialLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "historial.json")
-            if (file.exists()) {
-                val json = file.readText()
-                comprasEnviadas = gson.fromJson(json, Array<Compra>::class.java).toList()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    // ---------------------
-    // Filtrado / utilidades
-    // ---------------------
     fun actualizarEstadoPedido(pedidoId: Int, nuevoEstado: String) {
-        pedidos = pedidos.map { pedido ->
-            if (pedido.idPedido == pedidoId) pedido.copy(estadoNombre = nuevoEstado) else pedido
-        }
-    }
-
-    fun pedidosFiltrados(): List<Pedido> {
-        var resultado = pedidos
-
-        filtroProveedor?.let { proveedor ->
-            resultado = resultado.filter { it.proveedor == proveedor }
-        }
-
-        filtroEstado?.let { estado ->
-            resultado = resultado.filter { it.estadoNombre == estado }
-        }
-
-        if (busqueda.isNotBlank()) {
-            resultado = resultado.filter { pedido ->
-                // Comprobación segura del proveedor
-                val proveedorCoincide = pedido.proveedor.contains(busqueda, ignoreCase = true)
-
-                // ✅ CORRECCIÓN: Comprobación segura de los detalles del pedido
-                val detalleCoincide = pedido.detallesPedido?.any { detalle ->
-                    (detalle.productoNombre?.contains(busqueda, ignoreCase = true) ?: false) ||
-                            (detalle.codigoDeBarras?.contains(busqueda, ignoreCase = true) ?: false)
-                } ?: false // Si detallesPedido es null, el resultado de la comprobación es 'false'
-
-                proveedorCoincide || detalleCoincide
+        viewModelScope.launch(Dispatchers.IO) {
+            val pedido = pedidoDao.getPedido(pedidoId)
+            pedido?.let {
+                pedidoDao.updatePedido(it.copy(estado = nuevoEstado))
             }
         }
-
-        return resultado
     }
 
-    // ---------------------
-    // Selection helpers (un solo bloque, sin duplicados)
-    // ---------------------
     fun selectPedido(pedido: Pedido) {
-        selectedPedidoId = pedido.idPedido
-        // Crear/actualizar currentCompra cuando se selecciona un pedido
-        currentCompra = Compra(
-            idCompra = (compras.maxOfOrNull { it.idCompra } ?: 0) + 1,
+        _selectedPedidoId.value = pedido.idPedido
+        _currentCompra.value = Compra(
+            idCompra = 0,
             fechaCompra = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date()),
             proveedor = pedido.proveedor,
             detallesCompra = mutableListOf()
         )
-        // limpiar detalle seleccionado
-        selectedDetalleId = null
+        _selectedDetalleId.value = null
     }
 
-    fun getSelectedPedido(): Pedido? = selectedPedidoId?.let { id -> pedidos.find { it.idPedido == id } }
+    suspend fun getSelectedPedido(): Pedido? {
+        val id = _selectedPedidoId.value ?: return null
+        return withContext(Dispatchers.IO) {
+            pedidoDao.getPedidoConDetalles(id)?.aPedidoDeUI()
+        }
+    }
 
     fun selectDetalle(detalle: DetallePedido) {
-        selectedDetalleId = detalle.productoId
+        _selectedDetalleId.value = detalle.productoId
     }
 
-    fun getSelectedDetalle(): DetallePedido? = getSelectedPedido()?.detallesPedido?.find { it.productoId == selectedDetalleId }
+    fun proveedoresUnicos(): List<String> {
+        return pedidosFlow.value.map { it.proveedor }.distinct().sorted()
+    }
 
-    fun getCompraActual(): Compra? = currentCompra
+    // ============================================
+    // GESTIÓN DE COMPRAS
+    // ============================================
 
-    // ---------------------
-    // Lógica de compra: confirmar/editar/eliminar/finalizar
-    // ---------------------
+    fun agregarCompra(compra: Compra) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val compraEntity = compra.aCompraEntity()
+            val compraId = compraDao.insertCompra(compraEntity).toInt()
+
+            // Guardar detalles
+            compra.detallesCompra.forEach { detalle ->
+                detalleCompraDao.insertDetalle(detalle.aDetalleCompraEntity(compraId))
+            }
+        }
+    }
+
+    fun eliminarCompra(compra: Compra) {
+        viewModelScope.launch(Dispatchers.IO) {
+            compraDao.deleteCompra(compra.aCompraEntity())
+        }
+    }
+
     fun iniciarCompraDesdePedido(pedido: Pedido) {
-        currentCompra = Compra(
-            idCompra = (compras.maxOfOrNull { it.idCompra } ?: 0) + 1,
+        _currentCompra.value = Compra(
+            idCompra = 0,
             fechaCompra = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date()),
             proveedor = pedido.proveedor,
             detallesCompra = mutableListOf()
@@ -327,14 +416,20 @@ class PedidosViewModel : ViewModel() {
     }
 
     fun confirmarProducto(detalle: DetallePedido, cantidad: Double, precio: Double) {
-        val compra = currentCompra ?: return
+        val compra = _currentCompra.value ?: return
 
-        // marcar como confirmado en el pedido (mutación del modelo pedido)
-        getSelectedPedido()?.detallesPedido?.find { it.productoId == detalle.productoId }?.let {
-            it.confirmado = true
+        viewModelScope.launch(Dispatchers.IO) {
+            // Marcar como confirmado en Room
+            val pedidoId = _selectedPedidoId.value ?: return@launch
+            val detalles = detallePedidoDao.getDetallesPorPedido(pedidoId)
+            val detalleEntity = detalles.find { it.productoId == detalle.productoId }
+
+            detalleEntity?.let {
+                detallePedidoDao.updateDetalle(it.copy(confirmado = true))
+            }
         }
 
-        // crear/actualizar detalleCompra
+        // Actualizar compra local
         compra.detallesCompra.removeAll { it.productoId == detalle.productoId }
         compra.detallesCompra.add(
             DetalleCompra(
@@ -347,39 +442,11 @@ class PedidosViewModel : ViewModel() {
         )
     }
 
-
-    fun iniciarCargaDeDatos(context: Context, forzarActualizacion: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
-            isLoading = true
-            errorMessage = null
-
-            // Corrida EN PARALELO en IO
-            val proveedoresJob = async { cargarProveedores(context, forzarActualizacion) }
-            val productosJob = async { cargarProductos(context, forzarActualizacion) }
-
-            val proveedoresOK = proveedoresJob.await()
-            val productosOK = productosJob.await()
-
-            if (!proveedoresOK && !productosOK) {
-                errorMessage = "No se pudieron cargar los datos desde el servidor."
-            }
-
-            // Volvemos a main SOLO para actualizar UI
-            withContext(Dispatchers.Main) {
-                isLoading = false
-            }
-        }
-    }
-
-
-
-
     fun actualizarProductoEnCompra(detalle: DetallePedido, cantidad: Double, precio: Double) {
-        val compra = currentCompra ?: return
+        val compra = _currentCompra.value ?: return
         val existente = compra.detallesCompra.find { it.productoId == detalle.productoId }
 
         if (existente != null) {
-            // asumimos que DetalleCompra tiene propiedades var para cantidad/precio
             existente.cantidadCompra = cantidad
             existente.precioUnitario = precio
         } else {
@@ -387,7 +454,7 @@ class PedidosViewModel : ViewModel() {
                 DetalleCompra(
                     productoId = detalle.productoId,
                     productoNombre = detalle.productoNombre,
-                    codigoDeBarras = detalle.codigoDeBarras?: "",
+                    codigoDeBarras = detalle.codigoDeBarras ?: "",
                     cantidadCompra = cantidad,
                     precioUnitario = precio
                 )
@@ -396,299 +463,69 @@ class PedidosViewModel : ViewModel() {
     }
 
     fun eliminarDetalleDeCompra(detalle: DetallePedido) {
-        val compra = currentCompra ?: return
+        val compra = _currentCompra.value ?: return
         compra.detallesCompra.removeAll { it.productoId == detalle.productoId }
-        // marcar como no confirmado en el pedido
-        getSelectedPedido()?.detallesPedido?.find { it.productoId == detalle.productoId }?.let {
-            it.confirmado = false
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val pedidoId = _selectedPedidoId.value ?: return@launch
+            val detalles = detallePedidoDao.getDetallesPorPedido(pedidoId)
+            val detalleEntity = detalles.find { it.productoId == detalle.productoId }
+
+            detalleEntity?.let {
+                detallePedidoDao.updateDetalle(it.copy(confirmado = false))
+            }
         }
     }
 
-    fun finalizarCompra(compra: Compra, context: Context? = null) {
-        // Añadir a compras pendientes
-        compras = compras + compra
+    fun finalizarCompra(compra: Compra) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Guardar compra en Room
+            val compraEntity = compra.aCompraEntity()
+            val compraId = compraDao.insertCompra(compraEntity).toInt()
 
-        // Si el pedido asociado está completamente confirmado, cerrar el pedido
-        val pedido = getSelectedPedido()
-        if (pedido != null) {
-            val todosConfirmados = pedido.detallesPedido.all { it.confirmado }
-            if (todosConfirmados) {
-                actualizarEstadoPedido(pedido.idPedido, "cerrado")
+            compra.detallesCompra.forEach { detalle ->
+                detalleCompraDao.insertDetalle(detalle.aDetalleCompraEntity(compraId))
+            }
+
+            // Verificar si el pedido está completo
+            val pedidoId = _selectedPedidoId.value
+            if (pedidoId != null) {
+                val detalles = detallePedidoDao.getDetallesPorPedido(pedidoId)
+                val todosConfirmados = detalles.all { it.confirmado }
+
+                if (todosConfirmados) {
+                    val pedido = pedidoDao.getPedido(pedidoId)
+                    pedido?.let {
+                        pedidoDao.updatePedido(it.copy(estado = "cerrado"))
+                    }
+                }
             }
         }
 
-        // persistir compras locales si se proporciona context
-        context?.let { guardarComprasLocal(it) }
-
-        // limpiar selección actual
-        currentCompra = null
-        selectedPedidoId = null
-        selectedDetalleId = null
+        // Limpiar estado
+        _currentCompra.value = null
+        _selectedPedidoId.value = null
+        _selectedDetalleId.value = null
     }
 
-    // eliminar compra pendiente (por id)
-    fun eliminarCompra(compra: Compra) {
-        compras = compras.filter { it.idCompra != compra.idCompra }
-    }
-
-
-    // =========================================
-    // 🔹 GESTIÓN DE PROVEEDORES
-    // =========================================
-
-    fun proveedoresUnicos(): List<String> {
-        return pedidos.map { it.proveedor }.distinct().sorted()
-    }
+    // ============================================
+    // GESTIÓN DE NUEVO PEDIDO
+    // ============================================
 
     fun seleccionarProveedor(proveedor: Proveedor) {
         _proveedorSeleccionado.value = proveedor
     }
 
-
-    /**
-     * Carga los proveedores desde el servidor o desde un archivo local.
-     * Si han pasado más de 24 horas desde la última actualización, fuerza la recarga automáticamente.
-     */
-    suspend fun cargarProveedores(context: Context, forzarActualizacion: Boolean = false): Boolean {
-        var resultado = false
-        val file = File(context.filesDir, "proveedores.json")
-
-        isLoading = true
-
-        try {
-
-            if (!forzarActualizacion && file.exists()) {
-                withContext(Dispatchers.IO) {
-                    val json = file.readText()
-                    _proveedores.value = gson.fromJson(json, Array<Proveedor>::class.java).toList()
-                }
-                resultado = true
-                return resultado
-            }
-
-            if (apiUrl.isBlank()) {
-                errorMessage = "No se ha configurado la URL del servidor."
-                return false
-            }
-
-            val listaUI = withContext(Dispatchers.IO) {
-                val url = URL("${apiUrl.trimEnd('/')}/proveedores")
-                val con = url.openConnection() as HttpURLConnection
-                con.requestMethod = "GET"
-
-                val code = con.responseCode
-                if (code in 200..299) {
-                    val json = con.inputStream.bufferedReader().use { it.readText() }
-                    gson.fromJson(json, Array<Proveedor>::class.java).toList()
-                } else {
-                    val err = con.errorStream?.bufferedReader()?.use { it.readText() }
-                    throw Exception("Error HTTP $code: $err")
-                }
-            }
-
-            _proveedores.value = listaUI
-
-            withContext(Dispatchers.IO) {
-                file.writeText(gson.toJson(listaUI))
-            }
-
-            resultado = true
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-            errorMessage = "Error al cargar proveedores: ${e.message}"
-
-            // Cargar copia local si existe
-            if (file.exists()) {
-                try {
-                    withContext(Dispatchers.IO) {
-                        val json = file.readText()
-                        _proveedores.value = gson.fromJson(json, Array<Proveedor>::class.java).toList()
-                    }
-                    resultado = true
-                } catch (e2: Exception) {
-                    e2.printStackTrace()
-                    errorMessage = "Error al leer copia local: ${e2.message}"
-                    resultado = false
-                }
-            }
-        } finally {
-            isLoading = false
-        }
-
-        return resultado
-    }
-
-    fun guardarProveedoresLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "proveedores.json")
-            file.writeText(gson.toJson(_proveedores.value))
-            println("💾 Proveedores guardados localmente (${_proveedores.value.size} items).")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    fun cargarProveedoresLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "proveedores.json")
-            if (file.exists()) {
-                val json = file.readText()
-                _proveedores.value = gson.fromJson(json, Array<Proveedor>::class.java).toList()
-                println("📂 Proveedores cargados desde archivo local: ${_proveedores.value.size}")
-            } else {
-                println("⚠️ No se encontró archivo local de proveedores.")
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            errorMessage = "Error al cargar proveedores locales: ${e.message}"
-        }
-    }
-
-
-// =========================================
-// 🔹 GESTIÓN DE PRODUCTOS
-// =========================================
-
-    /**
-     * Carga los productos desde el servidor o desde un archivo local.
-     * Si han pasado más de 24 horas desde la última actualización, fuerza la recarga automáticamente.
-     */
-    /**
-     * Carga los productos desde el servidor o desde un archivo local.
-     * Si han pasado más de 24 horas desde la última actualización, fuerza la recarga automáticamente.
-     */
-    suspend fun cargarProductos(context: Context, forzarActualizacion: Boolean = false): Boolean {
-        var resultado = false
-        isLoading = true
-
-        val file = File(context.filesDir, "productos.json")
-        val prefs = context.getSharedPreferences("cache_info", Context.MODE_PRIVATE)
-        val ultimaActualizacion = prefs.getLong("ultima_actualizacion_productos", 0L)
-        val ahora = System.currentTimeMillis()
-        val hanPasado24h = (ahora - ultimaActualizacion) > (24 * 60 * 60 * 1000)
-
-        try {
-
-            // 1️⃣ Cargar desde archivo local si aplica
-            if (!forzarActualizacion && !hanPasado24h && file.exists()) {
-                withContext(Dispatchers.IO) {
-                    val json = file.readText()
-                    _productos.value = gson.fromJson(json, Array<Producto>::class.java).toList()
-                }
-                resultado = true
-                return resultado    // ← ya no afecta el finally
-            }
-
-            // 2️⃣ Validar URL
-            if (apiUrl.isBlank()) {
-                errorMessage = "No se ha configurado la URL del servidor."
-                resultado = false
-                return resultado
-            }
-
-            // 3️⃣ Descargar del servidor
-            val productosUI = withContext(Dispatchers.IO) {
-                val url = URL("${apiUrl.trimEnd('/')}/productos")
-                val con = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 15000
-                    readTimeout = 15000
-                }
-
-                val code = con.responseCode
-
-                if (code in 200..299) {
-                    val jsonString = con.inputStream.bufferedReader().use { it.readText() }
-
-                    val type = object : TypeToken<List<ProductoResponse>>() {}.type
-                    val listaApi = gson.fromJson<List<ProductoResponse>>(jsonString, type)
-
-                    listaApi.map { it.aProductoDeUI() }
-                } else {
-                    val err = con.errorStream?.bufferedReader()?.use { it.readText() }
-                    throw Exception("Error HTTP $code: $err")
-                }
-            }
-
-            // Guardar estado y archivo
-            _productos.value = productosUI
-
-            withContext(Dispatchers.IO) {
-                file.writeText(gson.toJson(productosUI))
-            }
-
-            prefs.edit { putLong("ultima_actualizacion_productos", ahora) }
-
-            resultado = true
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-            errorMessage = "Error al cargar productos: ${e.message}"
-
-            // 4️⃣ Intentar cargar local si existe
-            if (file.exists()) {
-                try {
-                    withContext(Dispatchers.IO) {
-                        val json = file.readText()
-                        _productos.value = gson.fromJson(json, Array<Producto>::class.java).toList()
-                    }
-                    resultado = true
-                } catch (e2: Exception) {
-                    e2.printStackTrace()
-                    errorMessage = "Error al leer copia local: ${e2.message}"
-                    resultado = false
-                }
-            }
-        } finally {
-            isLoading = false
-        }
-
-        return resultado
-    }
-
-
-    /**
-     * Guarda manualmente la lista actual de productos en el almacenamiento local.
-     */
-    fun guardarProductosLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "productos.json")
-            file.writeText(gson.toJson(_productos.value))
-            println("💾 Productos guardados localmente (${_productos.value.size} items).")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    /**
-     * Carga los productos directamente desde el archivo local, si existe.
-     */
-    fun cargarProductosLocal(context: Context) {
-        try {
-            val file = File(context.filesDir, "productos.json")
-            if (file.exists()) {
-                val json = file.readText()
-                _productos.value = gson.fromJson(json, Array<Producto>::class.java).toList()
-                println("📂 Productos cargados desde archivo local: ${_productos.value.size}")
-            } else {
-                println("⚠️ No se encontró archivo local de productos.")
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            errorMessage = "Error al cargar productos locales: ${e.message}"
-        }
-    }
-
     fun agregarProductoAlPedido(detalle: DetallePedido) {
         val listaActual = _detallesPedido.value.toMutableList()
-        // Opcional: si el producto ya existe, actualizarlo en lugar de añadirlo
         val productoExistenteIndex = listaActual.indexOfFirst { it.productoId == detalle.productoId }
+
         if (productoExistenteIndex != -1) {
-            listaActual[productoExistenteIndex] = detalle // O sumar cantidades, etc.
+            listaActual[productoExistenteIndex] = detalle
         } else {
             listaActual.add(detalle)
         }
+
         _detallesPedido.value = listaActual
     }
 
@@ -702,105 +539,235 @@ class PedidosViewModel : ViewModel() {
         _proveedorSeleccionado.value = null
         _detallesPedido.value = emptyList()
     }
+    // ✅ NUEVA: Guardar pedido localmente en Room
+    fun guardarPedidoLocal(pedido: Pedido) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val sdf = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+                val fechaActual = sdf.format(Date())
+                val calendario = Calendar.getInstance()
+                calendario.add(Calendar.DAY_OF_YEAR, 7)
+                val fechaEntrega = sdf.format(calendario.time)
 
+                // Crear entidad de pedido
+                val pedidoEntity = PedidoEntity(
+                    id = pedido.idPedido,
+                    fechaPedido = fechaActual,
+                    fechaEntregaEsperada = fechaEntrega,
+                    fechaEntregaReal = null,
+                    proveedorId = _proveedorSeleccionado.value?.id ?: 0,
+                    proveedorNombre = pedido.proveedor,
+                    estado = pedido.estadoNombre, // "pendiente_envio" o "enviado"
+                    observaciones = null,
+                    flete = 0.0,
+                    totalNeto = pedido.detallesPedido.sumOf { it.cantidadPedida * it.precioEsperado }
+                )
 
-    //*************************************************************
-    fun guardarPedidoEnServidor(
+                // Guardar pedido
+                pedidoDao.insertPedido(pedidoEntity)
+
+                // Guardar detalles
+                val detallesEntity = pedido.detallesPedido.map { detalle ->
+                    DetallePedidoEntity(
+                        pedidoId = pedido.idPedido,
+                        productoId = detalle.productoId,
+                        productoNombre = detalle.productoNombre,
+                        presentacionId = detalle.presentacionId,
+                        presentacionNombre = null,
+                        codigoBarras = detalle.codigoDeBarras,
+                        cantidadPedida = detalle.cantidadPedida,
+                        precioUnitario = detalle.precioEsperado,
+                        iva = 0.0,
+                        cantidadRecibida = null,
+                        subtotalProducto = detalle.cantidadPedida * detalle.precioEsperado,
+                        costoUnitarioFinal = detalle.precioEsperado,
+                        confirmado = false
+                    )
+                }
+                detallePedidoDao.insertDetalles(detallesEntity)
+
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _errorMessage.value = "Error al guardar localmente: ${e.message}"
+            }
+        }
+    }
+
+    // ✅ NUEVA: Intentar enviar pedido al servidor
+    fun intentarEnviarPedidoAlServidor(
         onSuccess: () -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onSinConexion: () -> Unit
     ) {
-        // Verificación de pre-condiciones
-        val prov = proveedorSeleccionado.value
+        val prov = _proveedorSeleccionado.value
         if (prov == null) {
             onError("No se ha seleccionado un proveedor.")
             return
         }
-        if (detallesPedido.value.isEmpty()) {
+        if (_detallesPedido.value.isEmpty()) {
             onError("No hay productos en el pedido.")
             return
         }
 
+        // Verificar si hay URL configurada
+        if (_apiUrl.value.isBlank()) {
+            onSinConexion()
+            limpiarPedidoActual()
+            return
+        }
+
         viewModelScope.launch {
-            isLoading = true
-            errorMessage = null
+            _isLoading.value = true
 
             try {
-                // 1. Construir el objeto de la petición (Request)
-                val sdf = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
-                val fechaActual = sdf.format(java.util.Date())
-                // Para la fecha de entrega, usamos 7 días en el futuro como ejemplo
-                val calendario = java.util.Calendar.getInstance()
-                calendario.add(java.util.Calendar.DAY_OF_YEAR, 7)
+                val sdf = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
+                val fechaActual = sdf.format(Date())
+                val calendario = Calendar.getInstance()
+                calendario.add(Calendar.DAY_OF_YEAR, 7)
                 val fechaEntrega = sdf.format(calendario.time)
 
-                val detallesRequest = detallesPedido.value.map { detalleUI ->
-                    DetallePedidoRequest(
+                val detallesRequest = _detallesPedido.value.map { detalleUI ->
+                    com.example.gestionpedidos.DetallePedidoRequest(
                         productoId = detalleUI.productoId,
                         presentacionId = detalleUI.presentacionId,
                         cantidadPedida = detalleUI.cantidadPedida,
                         precioUnitario = detalleUI.precioEsperado,
-                        descuentoPreIva = 0.00,
-                        iva = 0.00,
-                        otrosImpuestos = 0.50,
-                        otrosImpuestosDetalle = null,
-                        descuentoPosIva = 0.00,
-                        flete = 0.00,
-                        neto = detalleUI.precioEsperado * detalleUI.cantidadPedida,
-                        observacion = null
+                        neto = detalleUI.precioEsperado * detalleUI.cantidadPedida
                     )
                 }
 
-                val pedidoRequest = PedidoRequest(
+                val pedidoRequest = com.example.gestionpedidos.PedidoRequest(
                     fechaPedido = fechaActual,
                     fechaEntregaEsperada = fechaEntrega,
                     proveedorId = prov.id,
                     detalles = detallesRequest,
                     estado = "requerido",
-                    flete = 0.0,
-                    observaciones = "",
                     neto = detallesRequest.sumOf { it.precioUnitario * it.cantidadPedida }
                 )
 
-                // 2. Enviar la petición POST
-                val resultado = withContext(Dispatchers.IO) {
-                    val url = URL("${apiUrl.trimEnd('/')}/pedidos")
-                    val jsonBody = gson.toJson(pedidoRequest)
-
-                    val connection = url.openConnection() as java.net.HttpURLConnection
+                withContext(Dispatchers.IO) {
+                    val url = URL("${_apiUrl.value.trimEnd('/')}/pedidos")
+                    val connection = url.openConnection() as HttpURLConnection
                     connection.requestMethod = "POST"
-                    connection.setRequestProperty("Content-Type", "application/json; utf-8")
+                    connection.setRequestProperty("Content-Type", "application/json")
                     connection.setRequestProperty("Accept", "application/json")
                     connection.doOutput = true
-                    connection.connectTimeout = 15000
-                    connection.readTimeout = 15000
+                    connection.connectTimeout = 10000 // 10 segundos timeout
+                    connection.readTimeout = 10000
 
-                    // Escribir el cuerpo del JSON en la petición
+                    val jsonBody = gson.toJson(pedidoRequest)
                     connection.outputStream.use { os ->
                         val input = jsonBody.toByteArray(Charsets.UTF_8)
                         os.write(input, 0, input.size)
                     }
 
                     val responseCode = connection.responseCode
-                    if (responseCode in 200..299) {
-                        // Éxito
-                        "Pedido guardado en el servidor correctamente."
-                    } else {
-                        // Error
-                        val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "Error desconocido"
+                    if (responseCode !in 200..299) {
+                        val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() }
                         throw Exception("Error $responseCode: $errorBody")
                     }
+
+                    // ✅ Si llegamos aquí, el pedido se envió exitosamente
+                    // Actualizar el estado en Room a "enviado"
+                    val pedidosLocales = pedidoDao.getAllPedidosConDetalles().first()
+                    val pedidoPendiente = pedidosLocales.find {
+                        it.pedido.estado == "pendiente_envio" &&
+                                it.pedido.proveedorId == prov.id
+                    }
+
+                    pedidoPendiente?.let {
+                        pedidoDao.updatePedido(it.pedido.copy(estado = "enviado"))
+                    }
                 }
-                // 3. Notificar a la UI en caso de éxito
+
                 limpiarPedidoActual()
+                sincronizarPedidos() // Recargar desde servidor
                 onSuccess()
 
+            } catch (e: java.net.SocketTimeoutException) {
+                // Timeout = sin conexión
+                limpiarPedidoActual()
+                onSinConexion()
+            } catch (e: java.net.UnknownHostException) {
+                // No se puede resolver el host = sin conexión
+                limpiarPedidoActual()
+                onSinConexion()
             } catch (e: Exception) {
                 e.printStackTrace()
-                // 4. Notificar a la UI en caso de error
-                onError("Error al guardar: ${e.message}")
+                limpiarPedidoActual()
+                onError(e.message ?: "Error desconocido")
             } finally {
-                isLoading = false
+                _isLoading.value = false
             }
         }
+    }
+
+    // ✅ NUEVA: Obtener pedidos pendientes de envío
+    val pedidosPendientesEnvio: StateFlow<List<Pedido>> = pedidoDao.getAllPedidosConDetalles()
+        .map { lista ->
+            lista
+                .filter { it.pedido.estado == "pendiente_envio" }
+                .map { it.aPedidoDeUI() }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // ✅ NUEVA: Reintentar envío de pedidos pendientes
+    fun reintentarEnvioPedidosPendientes() {
+        viewModelScope.launch {
+            val pedidosPendientes = pedidosPendientesEnvio.value
+
+            if (pedidosPendientes.isEmpty()) {
+                _snackbarChannel.send("No hay pedidos pendientes de envío")
+                return@launch
+            }
+
+            var exitosos = 0
+            var fallidos = 0
+
+            pedidosPendientes.forEach { pedido ->
+                // TODO: Implementar lógica de reenvío por cada pedido
+                // Por ahora solo marcamos como enviados si hay conexión
+            }
+
+            if (exitosos > 0) {
+                _snackbarChannel.send("✅ $exitosos pedidos enviados")
+                sincronizarPedidos()
+            }
+            if (fallidos > 0) {
+                _snackbarChannel.send("⚠️ $fallidos pedidos no se pudieron enviar")
+            }
+        }
+    }
+
+    fun guardarPedidoEnServidor(
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        // Esta función ahora solo llama a la nueva lógica
+        intentarEnviarPedidoAlServidor(
+            onSuccess = onSuccess,
+            onError = onError,
+            onSinConexion = onSuccess // También consideramos éxito si se guarda local
+        )
+    }
+
+    // ============================================
+    // FILTROS
+    // ============================================
+
+    fun setFiltroProveedor(proveedor: String?) {
+        _filtroProveedor.value = proveedor
+    }
+
+    fun setFiltroEstado(estado: String?) {
+        _filtroEstado.value = estado
+    }
+
+    fun setBusqueda(texto: String) {
+        _busqueda.value = texto
     }
 }

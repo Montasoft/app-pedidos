@@ -4,18 +4,31 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.*
 import com.example.gestionpedidos.ui.*
 import com.example.gestionpedidos.ui.theme.GestionPedidosTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: PedidosViewModel by viewModels()
+    // ✅ Usar ViewModelFactory con context
+    private val viewModel: PedidosViewModel by viewModels {
+        PedidosViewModelFactory(this)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Cargar configuración y datos iniciales
+        lifecycleScope.launch {
+            viewModel.iniciarCargaDeDatos(forzarActualizacion = false)
+        }
+
         setContent {
             GestionPedidosTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
@@ -82,12 +95,20 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
         // DETALLE DE UN PEDIDO
         // ===============================
         composable("detallePedido") {
-            val pedido = viewModel.getSelectedPedido()
-            val compra = viewModel.getCompraActual()
+            // ❌ PROBLEMA 2: getSelectedPedido() ahora es suspend
+            // ✅ SOLUCIÓN: Usar LaunchedEffect + State
+
+            var pedido by remember { mutableStateOf<Pedido?>(null) }
+            val compra by viewModel.currentCompra.collectAsState()
+
+            LaunchedEffect(Unit) {
+                pedido = viewModel.getSelectedPedido()
+            }
+
             if (pedido != null && compra != null) {
                 PantallaDetallePedido(
-                    pedido = pedido,
-                    compraActual = compra,
+                    pedido = pedido!!,
+                    compraActual = compra!!,
                     onDetalleSeleccionado = { detalle ->
                         viewModel.selectDetalle(detalle)
                         navController.navigate("formularioProducto")
@@ -108,7 +129,13 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
                     }
                 )
             } else {
-                Text("Error: No hay pedido seleccionado")
+                // Mostrar loading mientras carga
+                Box(
+                    modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
             }
         }
 
@@ -116,18 +143,32 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
         // FORMULARIO PARA CONFIRMAR PRODUCTO
         // ===============================
         composable("formularioProducto") {
-            val detalle = viewModel.getSelectedDetalle()
+            val selectedDetalleId by viewModel.selectedDetalleId.collectAsState()
+            var detalle by remember { mutableStateOf<DetallePedido?>(null) }
+
+            LaunchedEffect(selectedDetalleId) {
+                selectedDetalleId?.let { detalleId ->
+                    val pedido = viewModel.getSelectedPedido()
+                    detalle = pedido?.detallesPedido?.find { it.productoId == detalleId }
+                }
+            }
+
             if (detalle != null) {
                 PantallaFormularioProducto(
-                    detalle = detalle,
+                    detalle = detalle!!,
                     onConfirmar = { cantidad, precio ->
-                        viewModel.confirmarProducto(detalle, cantidad, precio)
+                        viewModel.confirmarProducto(detalle!!, cantidad, precio)
                         navController.popBackStack()
                     },
                     onVolver = { navController.popBackStack() }
                 )
             } else {
-                Text("No hay producto seleccionado.")
+                Box(
+                    modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
             }
         }
 
@@ -135,20 +176,34 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
         // EDICIÓN DE PRODUCTO CONFIRMADO
         // ===============================
         composable("editarProducto") {
-            val detalle = viewModel.getSelectedDetalle()
-            val compra = viewModel.getCompraActual()
+            val selectedDetalleId by viewModel.selectedDetalleId.collectAsState()
+            val compra by viewModel.currentCompra.collectAsState()
+            var detalle by remember { mutableStateOf<DetallePedido?>(null) }
+
+            LaunchedEffect(selectedDetalleId) {
+                selectedDetalleId?.let { detalleId ->
+                    val pedido = viewModel.getSelectedPedido()
+                    detalle = pedido?.detallesPedido?.find { it.productoId == detalleId }
+                }
+            }
+
             if (detalle != null && compra != null) {
                 PantallaEditarProducto(
-                    compraActual = compra,
-                    detalle = detalle,
+                    compraActual = compra!!,
+                    detalle = detalle!!,
                     onGuardar = { cantidad, precio ->
-                        viewModel.actualizarProductoEnCompra(detalle, cantidad, precio)
+                        viewModel.actualizarProductoEnCompra(detalle!!, cantidad, precio)
                         navController.popBackStack()
                     },
                     onVolver = { navController.popBackStack() }
                 )
             } else {
-                Text("Error: No hay producto seleccionado")
+                Box(
+                    modifier = androidx.compose.ui.Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
             }
         }
 
@@ -173,21 +228,21 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
             )
         }
 
-// ===============================
-// NUEVO FLUJO DE PEDIDOS
-// ===============================
+        // ===============================
+        // NUEVO FLUJO DE PEDIDOS
+        // ===============================
         composable("crearPedido") {
-
             PantallaCrearPedido(
                 viewModel = viewModel,
                 onAgregarProductoClick = {
                     navController.navigate("seleccionarProducto")
                 },
-                onGuardarPedido = { pedido ->
-                    //TODO: Guardar el pedido en el servidor
-                    viewModel.pedidos = viewModel.pedidos + pedido
+                onGuardarPedido = {
                     navController.popBackStack()
                 },
+                onVolver = {
+                    navController.popBackStack()
+                }
             )
         }
 

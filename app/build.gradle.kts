@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("kotlin-parcelize")      // ✅ <-- agrega esta línea
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -69,6 +70,15 @@ dependencies {
     implementation ("androidx.camera:camera-camera2:1.3.4")
     implementation ("androidx.camera:camera-lifecycle:1.3.4")
     implementation ("androidx.camera:camera-view:1.3.4")
+
+    val room_version = "2.6.1"
+    implementation("androidx.room:room-runtime:$room_version")
+    implementation("androidx.room:room-ktx:$room_version") // Soporte para Coroutines
+    // Opcional - para testing
+    // testImplementation("androidx.room:room-testing:$room_version")
+    // Procesador de anotaciones
+    ksp("androidx.room:room-compiler:$room_version") // ✅ 2. AÑADE ESTA LÍNEA (Usa ksp en lugar de kapt)
+    // --- FIN DEPENDENCIAS DE ROOM ---
 
 
     // Gson para JSON
