@@ -1,9 +1,9 @@
 package com.example.gestionpedidos.ui
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -30,10 +30,13 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.ripple.rememberRipple
-
-
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextAlign
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,35 +48,29 @@ fun PantallaSeleccionarProducto(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // ✅ CORRECCIÓN 1: Observar StateFlows
     val productos by viewModel.productos.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
 
-    // Estados locales
     var busqueda by remember { mutableStateOf("") }
-    var categoriaSeleccionada by remember { mutableStateOf<String?>(null) }
+    val categoriaSeleccionada by viewModel.categoriaSeleccionada.collectAsState()
 
-    // Extraer categorías
     val categorias = remember(productos) {
         productos.map { it.categoriaNombre }.distinct().sorted()
     }
 
-    // ✅ CORRECCIÓN 2: Cargar productos sin context
     LaunchedEffect(Unit) {
         if (productos.isEmpty()) {
             viewModel.iniciarCargaDeDatos(forzarActualizacion = false)
         }
     }
 
-    // ✅ CORRECCIÓN 3: Observar canal de snackbar
     LaunchedEffect(Unit) {
         viewModel.snackbarFlow.collect { mensaje ->
             snackbarHostState.showSnackbar(mensaje)
         }
     }
 
-    // 🧩 Escuchar el resultado del escáner
     LaunchedEffect(Unit) {
         navController.currentBackStackEntry?.savedStateHandle
             ?.getStateFlow<String?>("codigoEscaneado", null)
@@ -96,7 +93,6 @@ fun PantallaSeleccionarProducto(
                     }
                 },
                 actions = {
-                    // Botón para actualizar catálogo
                     IconButton(
                         onClick = {
                             scope.launch {
@@ -112,13 +108,11 @@ fun PantallaSeleccionarProducto(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // ✅ Manejo de estados con when
             when {
                 isLoading -> {
                     Column(
@@ -133,7 +127,6 @@ fun PantallaSeleccionarProducto(
                         )
                     }
                 }
-
                 errorMessage != null && productos.isEmpty() -> {
                     Column(
                         modifier = Modifier
@@ -165,7 +158,6 @@ fun PantallaSeleccionarProducto(
                         }
                     }
                 }
-
                 else -> {
                     ContenidoSeleccionProducto(
                         productos = productos,
@@ -173,7 +165,7 @@ fun PantallaSeleccionarProducto(
                         categoriaSeleccionada = categoriaSeleccionada,
                         categorias = categorias,
                         onBusquedaChange = { busqueda = it },
-                        onCategoriaChange = { categoriaSeleccionada = it },
+                        onCategoriaChange = { viewModel.seleccionarCategoria (it) },
                         onEscanear = { navController.navigate("escanearCodigo") },
                         onAgregarProducto = { producto, cantidad, costo ->
                             val detalle = DetallePedido(
@@ -197,7 +189,6 @@ fun PantallaSeleccionarProducto(
     }
 }
 
-// ✅ Componente de contenido principal
 @Composable
 private fun ContenidoSeleccionProducto(
     productos: List<Producto>,
@@ -214,7 +205,6 @@ private fun ContenidoSeleccionProducto(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        // 🔍 Campo de búsqueda + botón escáner
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -225,9 +215,7 @@ private fun ContenidoSeleccionProducto(
                 onValueChange = onBusquedaChange,
                 label = { Text("Buscar producto") },
                 placeholder = { Text("Nombre o código de barras") },
-                leadingIcon = {
-                    Icon(Icons.Filled.Search, contentDescription = "Buscar")
-                },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Buscar") },
                 trailingIcon = {
                     if (busqueda.isNotEmpty()) {
                         IconButton(onClick = { onBusquedaChange("") }) {
@@ -238,7 +226,6 @@ private fun ContenidoSeleccionProducto(
                 modifier = Modifier.weight(1f),
                 singleLine = true
             )
-
             IconButton(
                 onClick = onEscanear,
                 modifier = Modifier.size(56.dp)
@@ -253,7 +240,6 @@ private fun ContenidoSeleccionProducto(
 
         Spacer(Modifier.height(12.dp))
 
-        // 🔽 Filtro por categoría
         FiltroCategoria(
             categoriaSeleccionada = categoriaSeleccionada,
             categorias = categorias,
@@ -262,7 +248,6 @@ private fun ContenidoSeleccionProducto(
 
         Spacer(Modifier.height(12.dp))
 
-        // 📦 Filtrar productos
         val productosFiltrados = remember(productos, busqueda, categoriaSeleccionada) {
             productos.filter {
                 (categoriaSeleccionada == null || it.categoriaNombre == categoriaSeleccionada) &&
@@ -272,7 +257,6 @@ private fun ContenidoSeleccionProducto(
             }
         }
 
-        // Contador
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -283,7 +267,6 @@ private fun ContenidoSeleccionProducto(
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.SemiBold
             )
-
             if (busqueda.isNotEmpty() || categoriaSeleccionada != null) {
                 TextButton(
                     onClick = {
@@ -298,7 +281,6 @@ private fun ContenidoSeleccionProducto(
 
         Spacer(Modifier.height(8.dp))
 
-        // Lista de productos
         when {
             productos.isEmpty() -> {
                 EstadoVacioProductos()
@@ -327,8 +309,6 @@ private fun ContenidoSeleccionProducto(
                             }
                         )
                     }
-
-                    // Espacio final
                     item {
                         Spacer(Modifier.height(16.dp))
                     }
@@ -338,7 +318,6 @@ private fun ContenidoSeleccionProducto(
     }
 }
 
-// ✅  Componente de filtro de categoría
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FiltroCategoria(
@@ -360,9 +339,7 @@ private fun FiltroCategoria(
             modifier = Modifier
                 .fillMaxWidth()
                 .menuAnchor(),
-            trailingIcon = {
-                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
-            }
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
         )
 
         ExposedDropdownMenu(
@@ -399,7 +376,6 @@ private fun FiltroCategoria(
     }
 }
 
-// ✅ Estados vacíos
 @Composable
 private fun EstadoVacioProductos() {
     Box(
@@ -458,51 +434,128 @@ private fun EstadoSinResultados(onLimpiarFiltros: () -> Unit) {
     }
 }
 
+enum class UltimoEditado {
+    CANTIDAD,
+    COSTO_UNITARIO,
+    SUBTOTAL
+}
 
-// ✅ Card de producto
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProductoItem(
+fun ProductoItem(
     producto: Producto,
     onAgregar: (Double, Double) -> Unit
 ) {
-    var cantidadText by remember { mutableStateOf(TextFieldValue("1")) }
-    var costoText by remember { mutableStateOf(TextFieldValue(producto.costo.toString())) }
+    // Estados
+    var cantidad by remember { mutableStateOf(TextFieldValue("1")) }
+    var costo by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = producto.costo.toString(),
+                selection = TextRange(producto.costo.toString().length)
+            )
+        )
+    }
+    var subtotal by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = producto.costo.toString(),
+                selection = TextRange(producto.costo.toString().length)
+            )
+        )
+    }
 
+    var ultimoEditado by remember { mutableStateOf(UltimoEditado.CANTIDAD) }
+
+    // Interaction sources
     val cantidadInteraction = remember { MutableInteractionSource() }
     val costoInteraction = remember { MutableInteractionSource() }
+    val subtotalInteraction = remember { MutableInteractionSource() }
 
-    val cantidadPressed by cantidadInteraction.collectIsPressedAsState()
-    val costoPressed by costoInteraction.collectIsPressedAsState()
+    val cantidadFocused by cantidadInteraction.collectIsFocusedAsState()
+    val costoFocused by costoInteraction.collectIsFocusedAsState()
+    val subtotalFocused by subtotalInteraction.collectIsFocusedAsState()
 
-    LaunchedEffect(cantidadPressed) {
-        if (cantidadPressed) {
-            cantidadText = cantidadText.copy(
-                selection = TextRange(0, cantidadText.text.length)
-            )
+    // Seleccionar texto SOLO al ganar foco
+    LaunchedEffect(cantidadFocused) {
+        if (cantidadFocused) {
+            cantidad = cantidad.copy(selection = TextRange(0, cantidad.text.length))
         }
     }
 
-    LaunchedEffect(costoPressed) {
-        if (costoPressed) {
-            costoText = costoText.copy(
-                selection = TextRange(0, costoText.text.length)
-            )
+    LaunchedEffect(costoFocused) {
+        if (costoFocused) {
+            costo = costo.copy(selection = TextRange(0, costo.text.length))
         }
     }
+
+    LaunchedEffect(subtotalFocused) {
+        if (subtotalFocused) {
+            subtotal = subtotal.copy(selection = TextRange(0, subtotal.text.length))
+        }
+    }
+
+    // Helpers
+    fun Double.format2() = String.format("%.2f", this)
+
+    fun actualizarDesdeCantidad(nuevaCantidad: TextFieldValue) {
+        cantidad = nuevaCantidad
+        val cant = nuevaCantidad.text.toDoubleOrNull() ?: return
+        val cost = costo.text.toDoubleOrNull() ?: producto.costo
+
+        if (ultimoEditado == UltimoEditado.SUBTOTAL) {
+            val nuevoCosto = if (cant > 0) (subtotal.text.toDoubleOrNull() ?: 0.0) / cant else cost
+            val texto = nuevoCosto.format2()
+            costo = TextFieldValue(texto, TextRange(texto.length))
+        } else {
+            val nuevoSubtotal = cant * cost
+            val texto = nuevoSubtotal.format2()
+            subtotal = TextFieldValue(texto, TextRange(texto.length))
+        }
+    }
+
+    fun actualizarDesdeCosto(nuevoCosto: TextFieldValue) {
+        costo = nuevoCosto
+        ultimoEditado = UltimoEditado.COSTO_UNITARIO
+
+        val cant = cantidad.text.toDoubleOrNull() ?: return
+        val cost = nuevoCosto.text.toDoubleOrNull() ?: return
+
+        val texto = (cant * cost).format2()
+        subtotal = TextFieldValue(texto, TextRange(texto.length))
+    }
+
+    fun actualizarDesdeSubtotal(nuevoSubtotal: TextFieldValue) {
+        subtotal = nuevoSubtotal
+        ultimoEditado = UltimoEditado.SUBTOTAL
+
+        val cant = cantidad.text.toDoubleOrNull() ?: return
+        val sub = nuevoSubtotal.text.toDoubleOrNull() ?: return
+        if (cant <= 0) return
+
+        val texto = (sub / cant).format2()
+        costo = TextFieldValue(texto, TextRange(texto.length))
+    }
+
+    // Detectar orientación
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.screenWidthDp >
+            configuration.screenHeightDp
+
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+        elevation = CardDefaults.cardElevation(3.dp)
     ) {
         Column(Modifier.padding(8.dp)) {
-            // Información del producto
-            Text(
-                producto.nombre,
+
+            // información del producto
+            Text(producto.nombre,
                 fontSize = 16.sp,
-                fontWeight = FontWeight.Bold
-            )
+                fontWeight = FontWeight.Bold)
+
             Spacer(Modifier.height(4.dp))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -513,194 +566,290 @@ private fun ProductoItem(
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                Column {
                     Text(
+                        // producto.costo.aPesos(),
                         producto.categoriaNombre,
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Text(
-                    producto.costo.aPesos(),
-                    fontSize = 16.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
-                )
             }
             Spacer(Modifier.height(8.dp))
 
-            // Controles
-            Row(
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                // Cantidad
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Cantidad",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        //modifier = Modifier.width(70.dp)
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .clickable {
-                                    val current = cantidadText.text.toDoubleOrNull() ?: 1.0
-                                    if (current > 1) {
-                                        cantidadText =
-                                            TextFieldValue((current - 1).toInt().toString())
-                                    }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Filled.Remove,
-                                "Disminuir",
-                                modifier = Modifier.size(24.dp)
+            // Controles - Layout responsivo
+            if (isLandscape) {
+                // Horizontal: todo en una fila
+                Row(
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth() )
+                {
+                    CantidadField(
+                        value = cantidad,
+                        interaction = cantidadInteraction,
+                        onChange = ::actualizarDesdeCantidad,
+                        onPlus = {
+                            val v = (cantidad.text.toIntOrNull() ?: 1) + 1
+                            actualizarDesdeCantidad(
+                                TextFieldValue(
+                                    v.toString(),
+                                    TextRange(v.toString().length)
+                                )
                             )
-                        }
+                        },
+                        onMinus = {
+                            val v = (cantidad.text.toIntOrNull() ?: 1)
+                            if (v > 1) {
+                                val n = v - 1
+                                actualizarDesdeCantidad(
+                                    TextFieldValue(
+                                        n.toString(),
+                                        TextRange(n.toString().length)
+                                    )
+                                )
+                            }
+                        },
+                        modifier = Modifier.weight(1.2f)
+                    )
+
+                    MoneyField(
+                        label = "Costo unitario",
+                        value = costo,
+                        interaction = costoInteraction,
+                        onChange = ::actualizarDesdeCosto,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    MoneyField(
+                        label = "Subtotal",
+                        value = subtotal,
+                        interaction = subtotalInteraction,
+                        onChange = ::actualizarDesdeSubtotal,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    Button(
+                        onClick = {
+                            val cant = cantidad.text.toDoubleOrNull() ?: 1.0
+                            val cost = costo.text.toDoubleOrNull() ?: producto.costo
+                            onAgregar(cant, cost)
+                        },
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = "Agregar")
                     }
                 }
-                        BasicTextField(
-                            value = cantidadText,
-                            onValueChange = { cantidadText = it },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1.4f),
-                            singleLine = true,
-                            interactionSource = cantidadInteraction,
-                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
-                        ) { innerTextField ->
-                            OutlinedTextFieldDefaults.DecorationBox(
-                                value = cantidadText.text,
-                                innerTextField = innerTextField,
-                                enabled = true,
-                                singleLine = true,
-                                visualTransformation = VisualTransformation.None,
-                                interactionSource = cantidadInteraction,
-                                contentPadding = PaddingValues(
-                                    start = 3.dp,
-                                    end = 3.dp,
-                                    top = 1.dp,
-                                    bottom = 1.dp
-                                ),
-
-                                container = {
-                                    OutlinedTextFieldDefaults.ContainerBox(
-                                        enabled = true,
-                                        isError = false,
-                                        interactionSource = cantidadInteraction,
-                                        colors = OutlinedTextFieldDefaults.colors()
-                                    )
-                                }
-                            )
-                        }
-                        IconButton(
-                            onClick = {
-                                val current = cantidadText.text.toDoubleOrNull() ?: 1.0
-                                cantidadText = TextFieldValue((current + 1).toInt().toString())
-                            },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(Icons.Filled.Add, "Aumentar")
-                        }
-
-                // Costo
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "Costo unitario",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                       // modifier = Modifier.padding(bottom = 4.dp)
-
-                    )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        BasicTextField(
-                            value = costoText,
-                            onValueChange = { costoText = it },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                            modifier = Modifier
-                                .fillMaxWidth(),
-
-                            singleLine = true,
-                            interactionSource = costoInteraction,
-                            textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
-                        ) { innerTextField ->
-                            OutlinedTextFieldDefaults.DecorationBox(
-                                value = costoText.text,
-                                innerTextField = innerTextField,
-                                enabled = true,
-                                singleLine = true,
-                                visualTransformation = VisualTransformation.None,
-                                interactionSource = costoInteraction,
-                                prefix = { Text("$") },
-                                contentPadding = PaddingValues(
-                                    start = 12.dp,
-                                    end = 12.dp,
-                                    top = 1.dp,
-                                    bottom = 1.dp
-                                ),
-                                container = {
-                                    OutlinedTextFieldDefaults.ContainerBox(
-                                        enabled = true,
-                                        isError = false,
-                                        interactionSource = costoInteraction,
-                                        colors = OutlinedTextFieldDefaults.colors()
-                                    )
-                                }
-                            )
-                        }
-                    }
-                }
-
-                // Botón agregar
-                FilledTonalButton(
-                    onClick = {
-                        val cantidadFinal = cantidadText.text.toDoubleOrNull() ?: 1.0
-                        val costoFinal = costoText.text.toDoubleOrNull() ?: producto.costo
-                        onAgregar(cantidadFinal, costoFinal)
-                    },
-                    modifier = Modifier.height(56.dp),
-                    contentPadding = PaddingValues(
-                        start = 1.dp,
-                        end = 1.dp,
-                        top = 13.dp,
-                        bottom = 1.dp
-                    )
+            }else{
+                // vertical: dos filas
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Filled.Check, "Agregar")
-                    Spacer(Modifier.width(4.dp))
-                    Text("Add")
+                    // primera fila: Cantidad y Costo unitario
+                    //*********
+                    Row(
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth() )
+                    {
+                        CantidadField(
+                            value = cantidad,
+                            interaction = cantidadInteraction,
+                            onChange = ::actualizarDesdeCantidad,
+                            onPlus = {
+                                val v = (cantidad.text.toIntOrNull() ?: 1) + 1
+                                actualizarDesdeCantidad(
+                                    TextFieldValue(
+                                        v.toString(),
+                                        TextRange(v.toString().length)
+                                    )
+                                )
+                            },
+                            onMinus = {
+                                val v = (cantidad.text.toIntOrNull() ?: 1)
+                                if (v > 1) {
+                                    val n = v - 1
+                                    actualizarDesdeCantidad(
+                                        TextFieldValue(
+                                            n.toString(),
+                                            TextRange(n.toString().length)
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.weight(1.2f)
+                        )
+
+                        MoneyField(
+                            label = "Costo unitario",
+                            value = costo,
+                            interaction = costoInteraction,
+                            onChange = ::actualizarDesdeCosto,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    // segunda fila: Subtotal y Boton Agregar
+                    Row(
+                        verticalAlignment = Alignment.Top,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth() )
+                    {
+                        MoneyField(
+                            label = "Subtotal",
+                            value = subtotal,
+                            interaction = subtotalInteraction,
+                            onChange = ::actualizarDesdeSubtotal,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        Button(
+                            onClick = {
+                                val cant = cantidad.text.toDoubleOrNull() ?: 1.0
+                                val cost = costo.text.toDoubleOrNull() ?: producto.costo
+                                onAgregar(cant, cost)
+                            },
+                            modifier = Modifier.height(40.dp)
+                        ) {
+                            Icon(Icons.Default.Check, contentDescription = "Agregar")
+                        }
+                    }
+
+
+                    //*********************
                 }
+            }
+
+
+        }
+    }
+}
+
+@Composable
+private fun CantidadField(
+    value: TextFieldValue,
+    interaction: MutableInteractionSource,
+    onChange: (TextFieldValue) -> Unit,
+    onPlus: () -> Unit,
+    onMinus: () -> Unit,
+    modifier: Modifier
+) {
+    Column(modifier = modifier) {
+        Text("Cantidad", fontSize = 12.sp)
+        Modifier.padding(bottom = 4.dp)
+        Row(verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(
+                    width = 1.dp,
+                    color = Color.Gray,
+                    shape = RoundedCornerShape(4.dp)
+                )
+        ) {
+
+            IconButton(onClick = onMinus) {
+                Icon(Icons.Default.Remove, null)
+            }
+
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                interactionSource = interaction,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                textStyle = LocalTextStyle.current.copy(textAlign = TextAlign.Center)
+            )
+
+            IconButton(onClick = onPlus) {
+                Icon(Icons.Default.Add, null)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoneyField(
+    label: String,
+    value: TextFieldValue,
+    interaction: MutableInteractionSource,
+    onChange: (TextFieldValue) -> Unit,
+    modifier: Modifier
+)   {
+    Column(modifier) {
+        Text(label, fontSize = 12.sp)
+        Modifier.padding(
+            bottom = 4.dp,
+            start = 12.dp
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(36.dp),
+            contentAlignment = Alignment.Center
+        ){
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp
+                    ),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Prefijo $
+                Text(
+                    text = "$",
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(end = 8.dp)
+                )
+                BasicTextField(
+                    value = value,
+                    onValueChange = onChange,
+                    interactionSource = interaction,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = LocalTextStyle.current.copy(fontSize = 16.sp)
+                )
             }
         }
     }
 }
 
 
-@Preview(showBackground = true) // <-- ¡La anotación mágica!
+@Composable
+private fun BotonAgregar(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Spacer(Modifier.height(16.dp))
+        FilledTonalButton(
+            onClick = onClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(32.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp)
+        ) {
+            Icon(Icons.Filled.Check, "Agregar", modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Add")
+        }
+    }
+}
+
+@Preview(showBackground = true)
 @Composable
 private fun PreviewProductoItem() {
-    // 1. Creamos un producto de ejemplo (dummy data)
     val productoDeEjemplo = Producto(
         id = 1,
-        nombre = "Producto de Ejemplo Muy Largo para Probar Espacios",
-        costo = 12500.50,
-        codigoBarras = "7701234567890",
+        nombre = "7 CEREALES VAINILLA X60G",
+        costo = 1893.0,
+        codigoBarras = "7708624784919",
         presentacionId = 101,
-        categoriaNombre = "Categoría de Prueba",
-        precioVenta = 500.0,
-        existencias = 14.0,
+        categoriaNombre = "Viveres",
+        precioVenta = 2500.0,
+        existencias = 93.0,
         categoriaId = 1,
         subcategoriaId = 1,
         estadoId = 1,
@@ -708,12 +857,9 @@ private fun PreviewProductoItem() {
         estadoNombre = "estado"
     )
 
-    // 2. Llamamos al Composable que queremos previsualizar
     ProductoItem(
         producto = productoDeEjemplo,
         onAgregar = { cantidad, costo ->
-            // En la previsualización, las acciones no hacen nada.
-            // Simplemente puedes imprimir en consola si quieres.
             println("Preview: Agregar $cantidad a un costo de $costo")
         }
     )

@@ -162,6 +162,8 @@ fun PantallaCrearPedido(
                                 onSuccess = {
                                     scope.launch {
                                         snackbarHostState.showSnackbar("✅ Pedido guardado correctamente")
+                                        // LIMPIAMOS LOS FILTROS PARA EL PRÓXIMO PEDIDO
+                                        viewModel.limpiarSeleccionDeFiltros()
                                         onGuardarPedido()
                                     }
                                 },

@@ -24,6 +24,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.io.path.outputStream
 
 class PedidosViewModel(private val context: Context) : ViewModel() {
 
@@ -114,6 +115,24 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
     private val _currentCompra = MutableStateFlow<Compra?>(null)
     val currentCompra: StateFlow<Compra?> = _currentCompra.asStateFlow()
 
+    // ESTADO PARA LA CATEGORÍA
+    private val _categoriaSeleccionada = MutableStateFlow<String?>(null)
+    val categoriaSeleccionada: StateFlow<String?> = _categoriaSeleccionada
+
+    //  FUNCIÓN PARA ACTUALIZAR LA CATEGORÍA
+    fun seleccionarCategoria(categoria: String?) {
+        _categoriaSeleccionada.value = categoria
+    }
+
+    // ✅ FUNCIÓN PARA LIMPIAR ESTADOS
+    // Esta función se puede llamar cuando un pedido se guarda o se cancela,
+    // para que la siguiente vez que se cree un pedido, todo esté desde cero.
+    fun limpiarSeleccionDeFiltros() {
+        _categoriaSeleccionada.value = null
+        // Aquí también podrías limpiar la búsqueda si la mueves al ViewModel
+    }
+
+
     // Filtros
     private val _filtroProveedor = MutableStateFlow<String?>(null)
     val filtroProveedor: StateFlow<String?> = _filtroProveedor.asStateFlow()
@@ -136,6 +155,12 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
     fun setApiUrl(url: String) {
         _apiUrl.value = url
         prefs.edit().putString("api_url", url).apply()
+    }
+
+    object EstadoPedido {
+        const val PENDIENTE_ENVIO = "pendiente_envio"
+        const val ENVIADO = "enviado"
+        const val CERRADO = "cerrado"
     }
 
     // ============================================
@@ -539,7 +564,7 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
         _proveedorSeleccionado.value = null
         _detallesPedido.value = emptyList()
     }
-    // ✅ NUEVA: Guardar pedido localmente en Room
+    // ✅ Guardar pedido localmente en Room
     fun guardarPedidoLocal(pedido: Pedido) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -549,27 +574,28 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
                 calendario.add(Calendar.DAY_OF_YEAR, 7)
                 val fechaEntrega = sdf.format(calendario.time)
 
-                // Crear entidad de pedido
                 val pedidoEntity = PedidoEntity(
-                    id = pedido.idPedido,
+                    id = 0,
                     fechaPedido = fechaActual,
                     fechaEntregaEsperada = fechaEntrega,
                     fechaEntregaReal = null,
                     proveedorId = _proveedorSeleccionado.value?.id ?: 0,
                     proveedorNombre = pedido.proveedor,
-                    estado = pedido.estadoNombre, // "pendiente_envio" o "enviado"
+                    estado = EstadoPedido.PENDIENTE_ENVIO,
                     observaciones = null,
                     flete = 0.0,
-                    totalNeto = pedido.detallesPedido.sumOf { it.cantidadPedida * it.precioEsperado }
+                    totalNeto = pedido.detallesPedido.sumOf {
+                        it.cantidadPedida * it.precioEsperado
+                    }
                 )
 
-                // Guardar pedido
-                pedidoDao.insertPedido(pedidoEntity)
+                // ✅ INSERTAR PEDIDO
+                val pedidoId = pedidoDao.insertPedido(pedidoEntity).toInt()
 
-                // Guardar detalles
-                val detallesEntity = pedido.detallesPedido.map { detalle ->
+                // ✅ INSERTAR DETALLES CON EL ID CORRECTO
+                val detalles = pedido.detallesPedido.map { detalle ->
                     DetallePedidoEntity(
-                        pedidoId = pedido.idPedido,
+                        pedidoId = pedidoId,
                         productoId = detalle.productoId,
                         productoNombre = detalle.productoNombre,
                         presentacionId = detalle.presentacionId,
@@ -584,11 +610,12 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
                         confirmado = false
                     )
                 }
-                detallePedidoDao.insertDetalles(detallesEntity)
+
+                detallePedidoDao.insertDetalles(detalles)
 
             } catch (e: Exception) {
                 e.printStackTrace()
-                _errorMessage.value = "Error al guardar localmente: ${e.message}"
+                _errorMessage.value = "Error al guardar pedido local: ${e.message}"
             }
         }
     }
@@ -671,7 +698,7 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
                     // Actualizar el estado en Room a "enviado"
                     val pedidosLocales = pedidoDao.getAllPedidosConDetalles().first()
                     val pedidoPendiente = pedidosLocales.find {
-                        it.pedido.estado == "pendiente_envio" &&
+                        it.pedido.estado == EstadoPedido.PENDIENTE_ENVIO &&
                                 it.pedido.proveedorId == prov.id
                     }
 
@@ -706,7 +733,7 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
     val pedidosPendientesEnvio: StateFlow<List<Pedido>> = pedidoDao.getAllPedidosConDetalles()
         .map { lista ->
             lista
-                .filter { it.pedido.estado == "pendiente_envio" }
+                .filter { it.pedido.estado == EstadoPedido.PENDIENTE_ENVIO }
                 .map { it.aPedidoDeUI() }
         }
         .stateIn(
@@ -718,27 +745,85 @@ class PedidosViewModel(private val context: Context) : ViewModel() {
     // ✅ NUEVA: Reintentar envío de pedidos pendientes
     fun reintentarEnvioPedidosPendientes() {
         viewModelScope.launch {
-            val pedidosPendientes = pedidosPendientesEnvio.value
+            val pedidosAEnviar = pedidosPendientesEnvio.value
 
-            if (pedidosPendientes.isEmpty()) {
-                _snackbarChannel.send("No hay pedidos pendientes de envío")
+            if (pedidosAEnviar.isEmpty()) {
+                _snackbarChannel.send("No hay pedidos pendientes de envío.")
                 return@launch
             }
 
+            if (_apiUrl.value.isBlank()) {
+                _snackbarChannel.send("⚠️ No hay URL de servidor. No se puede enviar.")
+                return@launch
+            }
+
+            _isLoading.value = true
             var exitosos = 0
             var fallidos = 0
 
-            pedidosPendientes.forEach { pedido ->
-                // TODO: Implementar lógica de reenvío por cada pedido
-                // Por ahora solo marcamos como enviados si hay conexión
+            pedidosAEnviar.forEach { pedido ->
+                try {
+                    // Reutilizamos la lógica de envío
+                    val detallesRequest = pedido.detallesPedido.map { detalleUI ->
+                        com.example.gestionpedidos.DetallePedidoRequest(
+                            productoId = detalleUI.productoId,
+                            presentacionId = detalleUI.presentacionId,
+                            cantidadPedida = detalleUI.cantidadPedida,
+                            precioUnitario = detalleUI.precioEsperado,
+                            neto = detalleUI.precioEsperado * detalleUI.cantidadPedida
+                        )
+                    }
+
+                    val pedidoRequest = com.example.gestionpedidos.PedidoRequest(
+                        fechaPedido = pedido.fechaPedido,
+                        fechaEntregaEsperada = pedido.fechaEntregaEsperada,
+                        proveedorId = pedido.proveedorId,
+                        detalles = detallesRequest,
+                        estado = "requerido",
+                        neto = pedido.totalNeto
+                    )
+
+                    // Envío en un contexto de IO
+                    withContext(Dispatchers.IO) {
+                        val url = URL("${_apiUrl.value.trimEnd('/')}/pedidos")
+                        val connection = url.openConnection() as HttpURLConnection
+                        // ... (Configuración de la conexión POST, igual que en intentarEnviarPedidoAlServidor)
+                        connection.requestMethod = "POST"
+                        connection.setRequestProperty("Content-Type", "application/json")
+                        // ... etc ...
+
+                        val jsonBody = gson.toJson(pedidoRequest)
+                        connection.outputStream.use { os ->
+                            val input = jsonBody.toByteArray(Charsets.UTF_8)
+                            os.write(input, 0, input.size)
+                        }
+
+                        val responseCode = connection.responseCode
+                        if (responseCode !in 200..299) {
+                            throw Exception("Falló el envío para el pedido del proveedor ${pedido.proveedor}")
+                        }
+                    }
+
+                    // Si tiene éxito, actualizamos su estado en Room
+                    pedidoDao.updatePedido(
+                        pedidoDao.getPedido(pedido.idPedido)!!.copy(estado = "enviado")
+                    )
+                    exitosos++
+
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    fallidos++
+                }
             }
 
+            _isLoading.value = false
+
             if (exitosos > 0) {
-                _snackbarChannel.send("✅ $exitosos pedidos enviados")
-                sincronizarPedidos()
+                _snackbarChannel.send("✅ $exitosos pedidos enviados correctamente.")
+                sincronizarPedidos() // Sincronizamos la lista principal
             }
             if (fallidos > 0) {
-                _snackbarChannel.send("⚠️ $fallidos pedidos no se pudieron enviar")
+                _snackbarChannel.send("⚠️ $fallidos pedidos no se pudieron enviar. Revisa tu conexión.")
             }
         }
     }

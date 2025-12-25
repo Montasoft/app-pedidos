@@ -28,13 +28,17 @@ fun PantallaCompras(
     onVerHistorial: () -> Unit,
     onVerComprasPendientes: () -> Unit,
     onConfiguracion: () -> Unit,
-    onCrearPedido: () -> Unit
+    onCrearPedido: () -> Unit,
+    onVerPedidosPendientes: () -> Unit
 ) {
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
 
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val pedidosPendientes by viewModel.pedidosPendientesEnvio.collectAsState() // <-- Observa los pendientes
+
 
     //Observar el canal de snackbar del viewModel
     LaunchedEffect(Unit) {
@@ -107,7 +111,25 @@ fun PantallaCompras(
                 }
                 item {
                     OpcionMenu(
-                        "🕒 Pendientes",
+                        "📜 Pedidos Pendientes (${pedidosPendientes.size})",
+                        "Pedidos guardados en local pendientes  por enviar al servidor",
+                        Icons.Default.CloudUpload,
+                        onClick = onVerPedidosPendientes
+                    )
+                }
+                if (pedidosPendientes.isNotEmpty()) {
+                    item {
+                        OpcionMenu(
+                            "📜 Pedidos Pendientes (${pedidosPendientes.size})",
+                            "Pedidos guardados en local pendientes  por enviar al servidor",
+                            Icons.Default.CloudUpload,
+                            onClick = onVerPedidosPendientes
+                        )
+                    }
+                }
+                item {
+                    OpcionMenu(
+                        "🕒 Compras Pendientes",
                         "Compras en curso por enviar",
                         Icons.Default.Schedule,
                         onVerComprasPendientes

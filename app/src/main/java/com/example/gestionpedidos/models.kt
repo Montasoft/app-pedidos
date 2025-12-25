@@ -18,8 +18,11 @@ import com.google.gson.annotations.SerializedName
 data class Pedido(
     val idPedido: Int,
     val fechaPedido: String,
+    val proveedorId: Int,
     val proveedor: String,
-    var estadoNombre: String,
+    val fechaEntregaEsperada: String,
+    val estadoNombre: String,
+    val totalNeto: Double,
     val detallesPedido: List<DetallePedido>
 )
 
@@ -191,6 +194,9 @@ fun PedidoResponse.aPedidoDeUI(): Pedido {
     return Pedido(
         idPedido = this.id,
         fechaPedido = this.fechaPedido,
+        proveedorId = this.proveedorId,
+        fechaEntregaEsperada = this.fechaEntregaEsperada,
+        totalNeto = this.totalNeto,
         proveedor = this.proveedorNombre,
         estadoNombre = this.estado,
         detallesPedido = this.detalles?.map { detalleResponse ->

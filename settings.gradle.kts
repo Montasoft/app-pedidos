@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Gestion Pedidos"
+rootProject.name = "Pedidos GutApp"
 include(":app")
  

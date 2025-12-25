@@ -70,6 +70,7 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
                 viewModel = viewModel,
                 onVerLista = { navController.navigate("listaPedidos") },
                 onVerHistorial = { navController.navigate("historial") },
+                onVerPedidosPendientes = { navController.navigate("pedidosPendientes") },
                 onVerComprasPendientes = { navController.navigate("pendientes") },
                 onConfiguracion = { navController.navigate("configuracion") },
                 onCrearPedido = { navController.navigate("crearPedido") }
@@ -95,8 +96,6 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
         // DETALLE DE UN PEDIDO
         // ===============================
         composable("detallePedido") {
-            // ❌ PROBLEMA 2: getSelectedPedido() ahora es suspend
-            // ✅ SOLUCIÓN: Usar LaunchedEffect + State
 
             var pedido by remember { mutableStateOf<Pedido?>(null) }
             val compra by viewModel.currentCompra.collectAsState()
@@ -265,5 +264,13 @@ fun AppNavegacion(viewModel: PedidosViewModel) {
                 onCancelar = { navController.popBackStack() }
             )
         }
+
+        composable("pedidosPendientes") {
+            PantallaPedidosPendientes(
+                viewModel = viewModel,
+                onVolver = { navController.popBackStack() }
+            )
+        }
+
     }
 }

@@ -297,9 +297,12 @@ fun PedidoConDetalles.aPedidoDeUI(): Pedido {
     return Pedido(
         idPedido = pedido.id,
         fechaPedido = pedido.fechaPedido,
+        proveedorId = this.pedido.proveedorId,
         proveedor = pedido.proveedorNombre,
-        estadoNombre = pedido.estado,
-        detallesPedido = detalles.map { it.aDetallePedidoDeUI() }
+        fechaEntregaEsperada = this.pedido.fechaEntregaEsperada,
+        estadoNombre = this.pedido.estado,
+        totalNeto = this.pedido.totalNeto,
+        detallesPedido = this.detalles.map { it.aDetallePedidoDeUI() }
     )
 }
 
